@@ -181,15 +181,26 @@ def main():
                 continue
 
             if ref_type == "call":
-                db.record_ref_call(from_numbat_id, to_numbat_id)
+                ref_id = db.record_ref_call(from_numbat_id, to_numbat_id)
             elif ref_type == "implements":
-                db.record_ref_inheritance(from_numbat_id, to_numbat_id)
+                ref_id = db.record_ref_inheritance(from_numbat_id, to_numbat_id)
             elif ref_type == "import":
-                db.record_ref_import(from_numbat_id, to_numbat_id)
+                ref_id = db.record_ref_import(from_numbat_id, to_numbat_id)
             elif ref_type == "embeds":
-                db.record_ref_inheritance(from_numbat_id, to_numbat_id)
+                ref_id = db.record_ref_inheritance(from_numbat_id, to_numbat_id)
             else:
-                db.record_ref_usage(from_numbat_id, to_numbat_id)
+                ref_id = db.record_ref_usage(from_numbat_id, to_numbat_id)
+
+            # Now record reference location if we have a file/line/column
+            file_path = ref.get("File", "")
+            line = ref.get("Line", 0)
+            col = ref.get("Column", 0)
+            if file_path in file_path_map and line > 0 and col > 0:
+                ref_file_id = file_path_map[file_path]
+                # Approximate highlight length by using the 'to_sym' name length if present
+                usage_length = len(to_sym["Name"]) if to_sym and to_sym.get("Name") else 1
+                end_col = col + max(1, usage_length) - 1
+                db.record_reference_location(ref_id, ref_file_id, line, col, line, end_col)
 
     # Optionally, record each module as a top-level namespace node in the DB.
     for m in modules:
