@@ -601,9 +601,12 @@ func ExtractTypeRelations(
 	}
 
 	// Step 2: For each interface, check which concrete types implement it.
-	// types.Implements(concrete, interface) returns true if concrete implements interface
+	// Step 2: For each interface, check which concrete types implement it.
+	// If the interface is from an external package (not in objectToSymbol), we create a stub symbol earlier,
+	// so ifaceE should already have a valid symbol ID. We simply record the "implements" reference here.
 	for _, ifaceE := range interfaceEntry {
 		ifaceType := ifaceE.ifaceType
+
 		for _, conc := range typeEntry {
 			// We check both T and *T (pointer) for the method set
 			if types.Implements(conc.typ, ifaceType) || types.Implements(types.NewPointer(conc.typ), ifaceType) {
@@ -633,16 +636,41 @@ func ExtractTypeRelations(
 					et = pt.Elem()
 				}
 				if named, ok := et.(*types.Named); ok {
-					if _, isIface := named.Underlying().(*types.Interface); isIface {
-						continue
+					embedObj := named.Obj()
+					embedID, found := objectToSymbol[embedObj]
+					if !found {
+						// Create an external symbol stub if the embedded type is from outside loaded packages
+						objPkg := embedObj.Pkg()
+						if objPkg != nil {
+							maxID++
+							// Determine if it's an interface or struct
+							underEmbed := named.Underlying()
+							kind := SymbolKindStruct
+							if _, isIface := underEmbed.(*types.Interface); isIface {
+								kind = SymbolKindInterface
+							}
+
+							newSym := Symbol{
+								ID:          maxID,
+								Name:        embedObj.Name(),
+								Kind:        kind,
+								PackagePath: objPkg.Path(),
+								External:    true,
+							}
+							symbols = append(symbols, newSym)
+							objectToSymbol[embedObj] = maxID
+							embedID = maxID
+						} else {
+							// If we can't determine a package, skip
+							continue
+						}
 					}
-					if embedID, found := objectToSymbol[named.Obj()]; found {
-						out = append(out, Reference{
-							FromID:  conc.id,
-							ToID:    embedID,
-							RefType: "embeds",
-						})
-					}
+					// Record the embedding relationship
+					out = append(out, Reference{
+						FromID:  conc.id,
+						ToID:    embedID,
+						RefType: "embeds",
+					})
 				}
 			}
 		}

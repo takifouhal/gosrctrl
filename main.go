@@ -135,6 +135,22 @@ func main() {
 	}
 	tmpScript.Close()
 
+	// Ensure the output directory exists
+	outputDir := filepath.Dir(dbOutput)
+	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
+		fmt.Printf("Creating output directory: %s\n", outputDir)
+		if err := os.MkdirAll(outputDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
+	// Check if we can write to the output directory
+	if err := checkDirectoryWritable(outputDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: output directory is not writable: %v\n", err)
+		os.Exit(1)
+	}
+
 	generateDBCmd := exec.Command("python3", tmpScriptPath, "-i", jsonOutput, "-o", dbOutput)
 	generateDBCmd.Stdout = os.Stdout
 	generateDBCmd.Stderr = os.Stderr
@@ -148,7 +164,34 @@ func main() {
 	// Clean up the temporary script file
 	os.Remove(tmpScriptPath)
 
-	fmt.Printf("Sourcetrail DB created at: %s\n", dbOutput)
+	// Verify the DB file was actually created
+	if _, err := os.Stat(dbOutput); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Error: Sourcetrail DB file was not created at: %s\n", dbOutput)
+		fmt.Fprintf(os.Stderr, "This may indicate an issue with the Python environment or the Numbat library.\n")
+		fmt.Fprintf(os.Stderr, "Please check that numbat is installed: pip install numbat==0.2.2\n")
+		os.Exit(1)
+	} else if err != nil {
+		fmt.Fprintf(os.Stderr, "Error checking Sourcetrail DB file: %v\n", err)
+		os.Exit(1)
+	} else {
+		// Check if the file has content (not zero bytes)
+		fileInfo, _ := os.Stat(dbOutput)
+		if fileInfo.Size() == 0 {
+			fmt.Fprintf(os.Stderr, "Warning: Sourcetrail DB file was created but is empty (0 bytes): %s\n", dbOutput)
+		} else {
+			fmt.Printf("Sourcetrail DB created at: %s (%.2f KB)\n", dbOutput, float64(fileInfo.Size())/1024.0)
+		}
+	}
+
+	// Check for the associated .srctrlprj file
+	prjFile := strings.TrimSuffix(dbOutput, ".srctrldb") + ".srctrlprj"
+	if _, err := os.Stat(prjFile); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: .srctrlprj project file was not created at: %s\n", prjFile)
+	} else if err != nil {
+		fmt.Fprintf(os.Stderr, "Error checking Sourcetrail project file: %v\n", err)
+	} else {
+		fmt.Printf("Sourcetrail project file created at: %s\n", prjFile)
+	}
 
 	// Optional: remove JSON after success
 	if !keepJSON {
@@ -197,4 +240,20 @@ func parseGoMod(dir string) ([]GoModule, error) {
 	}
 
 	return modules, nil
+}
+
+// checkDirectoryWritable tests if the given directory is writable
+// by attempting to create a temporary file in it
+func checkDirectoryWritable(dirPath string) error {
+	// Try to create a temporary file in the directory
+	tmpFile, err := os.CreateTemp(dirPath, "write_test_*.tmp")
+	if err != nil {
+		return err
+	}
+
+	// Clean up the temporary file
+	tmpFile.Close()
+	os.Remove(tmpFile.Name())
+
+	return nil
 }

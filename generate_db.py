@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import sys
 
 from pathlib import Path
 from numbat import SourcetrailDB
@@ -90,6 +91,26 @@ def main():
 
     input_path = Path(args.input)
     output_path = Path(args.output)
+    
+    # Debug information about paths
+    print(f"DEBUG: Using input file: {input_path.absolute()}", file=sys.stderr)
+    print(f"DEBUG: Target output file: {output_path.absolute()}", file=sys.stderr)
+    print(f"DEBUG: Current working directory: {os.getcwd()}", file=sys.stderr)
+    
+    # Check if output directory exists and is writable
+    output_dir = output_path.parent
+    if not output_dir.exists():
+        print(f"WARNING: Output directory does not exist: {output_dir}", file=sys.stderr)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            print(f"DEBUG: Created output directory: {output_dir}", file=sys.stderr)
+        except Exception as e:
+            print(f"ERROR: Failed to create output directory: {e}", file=sys.stderr)
+            exit(1)
+    
+    if not os.access(output_dir, os.W_OK):
+        print(f"ERROR: Output directory is not writable: {output_dir}", file=sys.stderr)
+        exit(1)
 
     if not input_path.exists():
         print(f"Error: Input file does not exist: {input_path}")
@@ -108,7 +129,13 @@ def main():
     modules = data.get("modules", [])
 
     # Open (and clear) the Sourcetrail DB
-    db = SourcetrailDB.open(output_path, clear=True)
+    try:
+        print(f"DEBUG: Opening Sourcetrail DB at: {output_path.absolute()}", file=sys.stderr)
+        db = SourcetrailDB.open(output_path, clear=True)
+        print(f"DEBUG: Successfully opened Sourcetrail DB", file=sys.stderr)
+    except Exception as e:
+        print(f"ERROR: Failed to open Sourcetrail DB: {e}", file=sys.stderr)
+        exit(1)
 
     # STEP 0: Build a top-level namespace for each module in the JSON
     # The first entry in 'modules' should be the main module; mark it as indexed.
@@ -195,7 +222,7 @@ def main():
             recorded_id = db.record_struct(
                 name=sym_name,
                 parent_id=parent_id,
-                hover_display=hover_display,
+                
                 is_indexed=indexed
             )
 
@@ -203,7 +230,7 @@ def main():
             recorded_id = db.record_interface(
                 name=sym_name,
                 parent_id=parent_id,
-                hover_display=hover_display,
+                
                 is_indexed=indexed
             )
 
@@ -240,7 +267,7 @@ def main():
             recorded_id = db.record_field(
                 name=sym_name,
                 parent_id=parent_id,
-                hover_display=hover_display,
+                
                 is_indexed=indexed
             )
 
@@ -248,7 +275,7 @@ def main():
             recorded_id = db.record_function(
                 name=sym_name,
                 parent_id=parent_id,
-                hover_display=hover_display,
+                
                 is_indexed=indexed
             )
 
@@ -273,7 +300,7 @@ def main():
             recorded_id = db.record_method(
                 name=sym_name,
                 parent_id=parent_found,
-                hover_display=hover_display,
+                
                 is_indexed=indexed
             )
 
@@ -282,7 +309,7 @@ def main():
             recorded_id = db.record_global_variable(
                 name=sym_name,
                 parent_id=parent_id,
-                hover_display=hover_display,
+                
                 is_indexed=indexed
             )
 
@@ -291,7 +318,7 @@ def main():
             recorded_id = db.record_field(
                 name=sym_name,
                 parent_id=parent_id,
-                hover_display=hover_display,
+                
                 is_indexed=indexed
             )
 
@@ -339,11 +366,12 @@ def main():
             if ref_type == "call":
                 ref_id = db.record_ref_call(from_numbat_id, to_numbat_id)
             elif ref_type in ("implements", "embeds"):
-                # "implements" or "embeds" => use inheritance in Numbat
                 ref_id = db.record_ref_inheritance(from_numbat_id, to_numbat_id)
             elif ref_type == "import":
                 ref_id = db.record_ref_import(from_numbat_id, to_numbat_id)
             elif ref_type == "write":
+                # NOTE: Numbat does not have a dedicated 'write' reference type,
+                # so we map "write" to 'usage' here.
                 ref_id = db.record_ref_usage(from_numbat_id, to_numbat_id)
             else:
                 ref_id = db.record_ref_usage(from_numbat_id, to_numbat_id)
@@ -358,7 +386,30 @@ def main():
                 end_col = col + max(1, usage_length) - 1
                 db.record_reference_location(ref_id, ref_file_id, line, col, line, end_col)
 
-    db.commit()
-    db.close()
+    try:
+        print(f"DEBUG: Committing Sourcetrail DB changes", file=sys.stderr)
+        db.commit()
+        print(f"DEBUG: Successfully committed changes", file=sys.stderr)
+        db.close()
+        print(f"DEBUG: Closed Sourcetrail DB", file=sys.stderr)
+        
+        # Verify the file exists after creation
+        if output_path.exists():
+            print(f"DEBUG: Verified file exists: {output_path.absolute()}, size: {output_path.stat().st_size} bytes", file=sys.stderr)
+        else:
+            print(f"ERROR: File does not exist after creation: {output_path.absolute()}", file=sys.stderr)
+            
+        # Check if project file was created too
+        project_path = output_path.with_suffix(".srctrlprj")
+        if project_path.exists():
+            print(f"DEBUG: Project file exists: {project_path.absolute()}, size: {project_path.stat().st_size} bytes", file=sys.stderr)
+        else:
+            print(f"DEBUG: Project file was not created: {project_path.absolute()}", file=sys.stderr)
+    except Exception as e:
+        print(f"ERROR during final steps: {e}", file=sys.stderr)
+        exit(1)
 
     print(f"✅ Successfully created Sourcetrail DB at: {output_path}")
+
+if __name__ == "__main__":
+    main()

@@ -58,8 +58,8 @@ When you expand the nodes in Sourcetrail, verify:
 
 1. **Module Nodes**: Appear as top-level namespaces for each module discovered in `go.mod`. The first (main) module should be flagged as `is_indexed` and show a normal icon. Any external references appear in a special `EXTERNAL` node or have separate modules with `is_indexed = false`.
 2. **Package Nodes**: Each Go package belonging to your main module is nested under the module node. Sub-packages might be further nested, reflecting their relative import paths (e.g., `module/foo`, `module/foo/bar`).
-3. **Types & Methods**: Inside each package node, check that your structs, interfaces, or type aliases appear. Methods show up under their respective receiver type, while stand-alone functions are attached directly to the package node.
-4. **Variables & Constants**: Package-level vars and consts appear as global variables under the package. Struct fields appear inside their struct symbols.
+3. **Types & Methods**: Inside each package node, check that your structs, interfaces, or type aliases appear. Methods (including those with pointer receivers, e.g. `(*Struct)`) should appear under their corresponding receiver type, while stand-alone functions are attached directly to the package node. This ensures object-oriented relationships are visible in the graph.
+4. **Variables & Constants**:
 
 ---
 
