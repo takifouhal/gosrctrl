@@ -18,6 +18,70 @@ import re
 from pathlib import Path
 from numbat import SourcetrailDB
 
+def get_or_create_package_namespace(package_path, module_map, db, package_map):
+    """
+    Create or retrieve a nested namespace node for the given package_path
+    under the appropriate module. If package_path matches or starts with a
+    known module path, we nest under that module. Otherwise, we place it
+    under an EXTERNAL namespace for third-party or unknown packages.
+    """
+    if package_path in package_map:
+        return package_map[package_path]
+
+    # Find the module that best matches this package path (longest prefix match)
+    best_module = None
+    best_len = 0
+    for mp in module_map:
+        # skip the "EXTERNAL" sentinel if present
+        if mp == "EXTERNAL":
+            continue
+        if package_path == mp or package_path.startswith(mp + "/"):
+            if len(mp) > best_len:
+                best_len = len(mp)
+                best_module = mp
+
+    # If no suitable module found, place under EXTERNAL
+    if best_module is None:
+        best_module = "EXTERNAL"
+        if "EXTERNAL" not in module_map:
+            external_id = db.record_namespace(
+                name="EXTERNAL",
+                parent_id=None,
+                is_indexed=False
+            )
+            module_map["EXTERNAL"] = external_id
+
+        parent_id = module_map["EXTERNAL"]
+        parts = package_path.split("/")
+    else:
+        parent_id = module_map[best_module]
+        remainder = package_path[len(best_module):].lstrip("/")
+        parts = remainder.split("/") if remainder else []
+
+    current_parent = parent_id
+    current_path = best_module
+
+    # Create nested namespaces for each path segment
+    for p in parts:
+        new_path = current_path + "/" + p if current_path != "EXTERNAL" else p
+        if new_path in package_map:
+            current_parent = package_map[new_path]
+            current_path = new_path
+            continue
+        else:
+            ns_id = db.record_namespace(
+                name=p,
+                parent_id=current_parent,
+                is_indexed=True,
+                delimiter="/"
+            )
+            package_map[new_path] = ns_id
+            current_parent = ns_id
+            current_path = new_path
+
+    package_map[package_path] = current_parent
+    return current_parent
+
 def main():
     parser = argparse.ArgumentParser(description="Generate a Sourcetrail DB from GoSrcCtrl JSON output using Numbat.")
     parser.add_argument("-i", "--input", required=True, help="Path to the JSON file with symbols and references.")
@@ -46,7 +110,31 @@ def main():
     # Open (and clear) the Sourcetrail DB
     db = SourcetrailDB.open(output_path, clear=True)
 
-    # STEP 0: Gather all unique file paths and record them in the DB
+    # STEP 0: Build a top-level namespace for each module in the JSON
+    # The first entry in 'modules' should be the main module; mark it as indexed.
+    module_map = {}
+    for idx, m in enumerate(modules):
+        mod_path = m.get("path", "")
+        mod_ver = m.get("version", "")
+        if mod_path:
+            # Combine path & version for the node name
+            full_name = mod_path
+            if mod_ver:
+                full_name += f"@{mod_ver}"
+            # The first module is presumably the main module, so is_indexed = True
+            is_main = (idx == 0)
+            mod_id = db.record_namespace(
+                name=full_name,
+                parent_id=None,
+                is_indexed=is_main,
+                delimiter="/"
+            )
+            module_map[mod_path] = mod_id
+
+    # Prepare a special EXTERNAL node for anything not belonging to known modules
+    # We'll create it on-demand inside get_or_create_package_namespace() if needed.
+
+    # STEP 1: Gather unique file paths and record them with language "go"
     file_path_map = {}
     unique_files = set()
 
@@ -56,114 +144,107 @@ def main():
         if file_path:
             unique_files.add(file_path)
 
-    # Collect files from references (if relevant)
+    # Collect files from references
     for ref in references:
         file_path = ref.get("File", "")
         if file_path:
             unique_files.add(file_path)
 
-    # Record each file with language "go"
     for fpath in unique_files:
         abs_path = Path(fpath).resolve()
         file_id = db.record_file(abs_path)
-        # If "go" is not recognized, you may have to use "cpp" for highlighting
+        # For best results, set language to "go" if recognized by your Sourcetrail version
         db.record_file_language(file_id, "go")
         file_path_map[fpath] = file_id
 
-    # A map from our internal Symbol.ID to Numbat's recorded ID
+    # A map from our Symbol.ID to the recorded Numbat symbol ID
     symbol_id_map = {}
 
-    # We may want a helper for package nodes
-    #   Key: (package path) -> numbat_id
+    # We'll store package namespace IDs here
     package_map = {}
 
-    # STEP 1: Insert all symbols, and record their locations
+    # STEP 2: Insert all symbols. For "package" kind, we create a namespace node;
+    # for other kinds, we record them under their package parent as before.
     for sym in symbols:
         sym_id = sym["ID"]
         sym_name = sym["Name"]
         sym_kind = sym["Kind"]
-        package_path = sym["PackagePath"]
-        receiver_str = sym["Receiver"]  # for methods
+        package_path = sym.get("PackagePath", "")
+        receiver_str = sym.get("Receiver", "")
 
-        # Ensure we have a package node if needed
-        pkg_id = None
+        # Identify (or create) the package namespace that owns this symbol
+        pkg_parent_id = None
         if package_path:
-            # If not already recorded, create a "class" for the package:
-            if package_path not in package_map:
-                pkg_class_id = db.record_class(name=package_path, parent_id=None)
-                package_map[package_path] = pkg_class_id
-            pkg_id = package_map[package_path]
+            pkg_parent_id = get_or_create_package_namespace(package_path, module_map, db, package_map)
 
-        # Decide how to record this symbol based on sym_kind
+        # Decide how to record the symbol
         if sym_kind == "package":
-            # For a package symbol, just treat it as a class with the package path as name
-            recorded_id = package_map.get(package_path)
-            if recorded_id is None:
-                # Record under package path or symbol name
-                recorded_id = db.record_class(name=sym_name, parent_id=None)
-                package_map[package_path] = recorded_id
+            # Just map the package itself to the namespace
+            # (We already created it above, so record that as the symbol ID.)
+            recorded_id = pkg_parent_id
         elif sym_kind == "type":
-            # Record a new class. Parent is the package node if we have one.
-            recorded_id = db.record_class(name=sym_name, parent_id=pkg_id)
+            # A user-defined type (struct, interface, etc.); record as a class (or future enhancement).
+            # Parent is the package's namespace
+            recorded_id = db.record_class(name=sym_name, parent_id=pkg_parent_id)
         elif sym_kind == "field":
-            # This is a struct field. If there's a receiver string, find that struct as parent.
-            if receiver_str and receiver_str != "":
+            # This is a struct field, so we try to find the parent type if the receiver string is known
+            if receiver_str:
                 raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
                 potential_type_name = raw_receiver.split(".")[-1]
                 parent_id = None
+                # Attempt to find the type symbol
                 for s2 in symbols:
                     if (s2["Kind"] == "type" and
                         s2["Name"] == potential_type_name and
-                        s2["PackagePath"] == package_path):
+                        s2.get("PackagePath", "") == package_path):
                         parent_id = symbol_id_map.get(s2["ID"])
                         break
                 if parent_id is None:
-                    parent_id = pkg_id
+                    parent_id = pkg_parent_id
                 recorded_id = db.record_field(name=sym_name, parent_id=parent_id)
             else:
-                recorded_id = db.record_field(name=sym_name, parent_id=pkg_id)
+                # default to a field under package
+                recorded_id = db.record_field(name=sym_name, parent_id=pkg_parent_id)
         elif sym_kind in ("var", "const"):
-            # Record a field. Parent is the package node
-            recorded_id = db.record_field(name=sym_name, parent_id=pkg_id)
+            # Global variable or constant => treat as a field or global var
+            recorded_id = db.record_global_variable(name=sym_name, parent_id=pkg_parent_id)
         elif sym_kind in ("func", "method"):
-            # Method if there's a receiver (making it a method)
-            if receiver_str and receiver_str != "":
+            # If there's a receiver, treat as a method
+            if receiver_str:
                 raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
                 potential_type_name = raw_receiver.split(".")[-1]
                 parent_id = None
                 for s2 in symbols:
                     if (s2["Kind"] == "type" and
                         s2["Name"] == potential_type_name and
-                        s2["PackagePath"] == package_path):
+                        s2.get("PackagePath", "") == package_path):
                         parent_id = symbol_id_map.get(s2["ID"])
                         break
                 if parent_id is None:
-                    parent_id = pkg_id
+                    parent_id = pkg_parent_id
                 recorded_id = db.record_method(name=sym_name, parent_id=parent_id)
             else:
-                # Standalone function
-                recorded_id = db.record_method(name=sym_name, parent_id=pkg_id)
+                # Standalone function in the package
+                recorded_id = db.record_function(name=sym_name, parent_id=pkg_parent_id)
         else:
-            # Fallback: record as field
-            recorded_id = db.record_field(name=sym_name, parent_id=pkg_id)
+            # Fallback: just record as a field
+            recorded_id = db.record_field(name=sym_name, parent_id=pkg_parent_id)
 
-        # Store the Numbat ID in our map
         symbol_id_map[sym_id] = recorded_id
 
-        # Record symbol location if we have file info
+        # Record location if available
         file_path = sym.get("File", "")
         line = sym.get("Line", 0)
         col = sym.get("Column", 0)
         if file_path and file_path in file_path_map and line > 0 and col > 0:
             file_id = file_path_map[file_path]
-            # Approximate end column by adding length of the symbol name minus 1
             start_line = line
             start_col = col
             end_line = line
-            end_col = col + len(sym_name) - 1 if len(sym_name) > 0 else col
+            end_col = col + max(1, len(sym_name)) - 1
             db.record_symbol_location(recorded_id, file_id, start_line, start_col, end_line, end_col)
 
-    # STEP 2: Insert references
+    # STEP 3: Insert references (calls, usages, imports, etc.)
     for ref in references:
         from_id = ref["FromID"]
         to_id = ref["ToID"]
@@ -171,48 +252,34 @@ def main():
         from_numbat_id = symbol_id_map.get(from_id)
         to_numbat_id = symbol_id_map.get(to_id)
         if from_numbat_id is not None and to_numbat_id is not None:
-            # Skip function->package usage references
+            # Skip function->package usage references that may appear spurious
             from_sym = next((s for s in symbols if s["ID"] == from_id), None)
             to_sym = next((s for s in symbols if s["ID"] == to_id), None)
             if (ref_type in ("usage", "call")
                 and from_sym and to_sym
-                and from_sym["Kind"] in ("func","method")
+                and from_sym["Kind"] in ("func", "method")
                 and to_sym["Kind"] == "package"):
                 continue
 
             if ref_type == "call":
                 ref_id = db.record_ref_call(from_numbat_id, to_numbat_id)
-            elif ref_type == "implements":
+            elif ref_type in ("implements", "embeds"):
+                # "implements" or "embeds" => use inheritance
                 ref_id = db.record_ref_inheritance(from_numbat_id, to_numbat_id)
             elif ref_type == "import":
                 ref_id = db.record_ref_import(from_numbat_id, to_numbat_id)
-            elif ref_type == "embeds":
-                ref_id = db.record_ref_inheritance(from_numbat_id, to_numbat_id)
             else:
                 ref_id = db.record_ref_usage(from_numbat_id, to_numbat_id)
 
-            # Now record reference location if we have a file/line/column
             file_path = ref.get("File", "")
             line = ref.get("Line", 0)
             col = ref.get("Column", 0)
             if file_path in file_path_map and line > 0 and col > 0:
                 ref_file_id = file_path_map[file_path]
-                # Approximate highlight length by using the 'to_sym' name length if present
                 usage_length = len(to_sym["Name"]) if to_sym and to_sym.get("Name") else 1
                 end_col = col + max(1, usage_length) - 1
                 db.record_reference_location(ref_id, ref_file_id, line, col, line, end_col)
 
-    # Optionally, record each module as a top-level namespace node in the DB.
-    for m in modules:
-        mod_path = m.get("path", "")
-        mod_ver = m.get("version", "")
-        if mod_path:
-            # Combining path & version for the node name
-            full_name = mod_path
-            if mod_ver:
-                full_name += f"@{mod_ver}"
-            db.record_namespace(name=full_name, parent_id=None)
-    
     db.commit()
     db.close()
 
