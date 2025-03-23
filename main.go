@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 func main() {
@@ -76,5 +77,21 @@ func main() {
 	}
 
 	fmt.Println("\n(References extraction logic can be refined to distinguish calls, reads, etc.)")
-	fmt.Println("\n(Parsing logic to be further developed in future tasks.)")
+	fmt.Println("(Parsing logic to be further developed in future tasks.)")
+
+	// --------------------------------------------------
+	// Export symbols and references to JSON
+	// If the outArg ends with .srctrldb, produce a .json file instead
+	jsonOutput := outArg
+	if filepath.Ext(outArg) == ".srctrldb" {
+		jsonOutput = strings.TrimSuffix(outArg, ".srctrldb") + ".json"
+	}
+
+	if err := ExportToJSON(jsonOutput, symbols, references); err != nil {
+		fmt.Fprintf(os.Stderr, "Error exporting to JSON: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\nJSON export written to %s\n", jsonOutput)
+	fmt.Println("Done.")
 }
