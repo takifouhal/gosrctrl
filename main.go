@@ -79,6 +79,15 @@ func main() {
 			r.FromID, r.ToID, r.File, r.Line, r.Column, r.RefType)
 	}
 
+	// Now detect interface implementations and embedded structs:
+	typeRelations := ExtractTypeRelations(pkgs, symbols, objectToSymbol, packageToSymbol)
+	references = append(references, typeRelations...)
+
+	fmt.Printf("\nExtracted %d additional type-relations:\n", len(typeRelations))
+	for _, r := range typeRelations {
+		fmt.Printf("- from: %d to: %d, relationship: %s\n", r.FromID, r.ToID, r.RefType)
+	}
+
 	fmt.Println("\n(References extraction logic can be refined to distinguish calls, reads, etc.)")
 	fmt.Println("(Parsing logic to be further developed in future tasks.)")
 

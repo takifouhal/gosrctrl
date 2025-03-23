@@ -172,6 +172,10 @@ def main():
         if from_numbat_id is not None and to_numbat_id is not None:
             if ref_type == "call":
                 db.record_ref_call(from_numbat_id, to_numbat_id)
+            elif ref_type == "implements":
+                db.record_ref_inheritance(from_numbat_id, to_numbat_id)
+            elif ref_type == "embeds":
+                db.record_ref_inheritance(from_numbat_id, to_numbat_id)
             else:
                 db.record_ref_usage(from_numbat_id, to_numbat_id)
         # Optionally, we could record usage locations here, but we'll skip for simplicity

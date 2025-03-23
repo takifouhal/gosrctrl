@@ -288,6 +288,119 @@ func ExtractReferences(
 	return references
 }
 
+// ExtractTypeRelations detects:
+// 1) "struct X implements interface Y"
+// 2) "struct A embeds struct B"
+//
+// It returns references with RefType = "implements" or "embeds".
+func ExtractTypeRelations(
+	pkgs []*packages.Package,
+	symbols []Symbol,
+	objectToSymbol map[types.Object]int,
+	packageToSymbol map[*packages.Package]int,
+) []Reference {
+
+	var out []Reference
+
+	// Step 1: Build a list of all (struct, structID, types.Type) and (interface, interfaceID, *types.Interface)
+	typeEntry := []struct {
+		id   int
+		obj  types.Object
+		typ  types.Type
+	}{}
+	interfaceEntry := []struct {
+		id        int
+		obj       types.Object
+		ifaceType *types.Interface
+	}{}
+
+	// We already have an idToObject map internally, let's build it again or on the fly:
+	idToObject := make(map[int]types.Object, len(objectToSymbol))
+	for obj, sid := range objectToSymbol {
+		idToObject[sid] = obj
+	}
+
+	// Identify interface vs struct from the known symbols
+	for _, sym := range symbols {
+		if sym.Kind != SymbolKindType {
+			continue
+		}
+		obj := idToObject[sym.ID]
+		typeName, _ := obj.(*types.TypeName)
+		if typeName == nil {
+			continue
+		}
+		typ := typeName.Type()
+		// Check if interface
+		if iface, ok := typ.Underlying().(*types.Interface); ok {
+			interfaceEntry = append(interfaceEntry, struct {
+				id        int
+				obj       types.Object
+				ifaceType *types.Interface
+			}{
+				id:        sym.ID,
+				obj:       obj,
+				ifaceType: iface,
+			})
+		} else {
+			// Must be a struct or other concrete type
+			typeEntry = append(typeEntry, struct {
+				id   int
+				obj  types.Object
+				typ  types.Type
+			}{
+				id:  sym.ID,
+				obj: obj,
+				typ: typ,
+			})
+		}
+	}
+
+	// Step 2: For each interface, check which concrete types implement it.
+	// types.Implements(concrete, interface) returns true if concrete implements interface
+	for _, ifaceE := range interfaceEntry {
+		ifaceType := ifaceE.ifaceType
+		for _, conc := range typeEntry {
+			// We check both T and *T (pointer) for the method set
+			if types.Implements(conc.typ, ifaceType) || types.Implements(types.NewPointer(conc.typ), ifaceType) {
+				r := Reference{
+					FromID:  conc.id,
+					ToID:    ifaceE.id,
+					RefType: "implements",
+				}
+				out = append(out, r)
+			}
+		}
+	}
+
+	// Step 3: For each struct, detect embedded fields
+	for _, conc := range typeEntry {
+		under := conc.typ.Underlying()
+		st, ok := under.(*types.Struct)
+		if !ok {
+			continue
+		}
+		// For each field, check if it's embedded
+		for i := 0; i < st.NumFields(); i++ {
+			f := st.Field(i)
+			if f.Embedded() {
+				// If we know the field's symbol ID, create an "embeds" reference
+				if embedID, found := objectToSymbol[f]; found {
+					// "FromID" = struct, "ToID" = embedded struct
+					r := Reference{
+						FromID:  conc.id,
+						ToID:    embedID,
+						RefType: "embeds",
+					}
+					out = append(out, r)
+				}
+			}
+		}
+	}
+
+	return out
+}
+
 // findEnclosingFunctionID checks whether a position belongs to the body of a known function/method.
 // If found, returns that function's symbol ID; otherwise returns -1.
 func findEnclosingFunctionID(
