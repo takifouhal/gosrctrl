@@ -396,6 +396,16 @@ func ExtractReferences(
 					if hasPkg {
 						maxID++
 						stubKind := classifyObject(obj)
+	
+						// Check if it is actually an interface
+						if stubKind == SymbolKindType {
+							if named, okType := obj.Type().(*types.Named); okType {
+								if _, isIface := named.Underlying().(*types.Interface); isIface {
+									stubKind = SymbolKindInterface
+								}
+							}
+						}
+	
 						sym := Symbol{
 							ID:          maxID,
 							Name:        obj.Name(),
@@ -406,7 +416,7 @@ func ExtractReferences(
 						symbols = append(symbols, sym)
 						objectToSymbol[obj] = maxID
 						toID = maxID
-
+	
 						// Also add an implicit reference from package to this symbol
 						references = append(references, Reference{
 							FromID:  pkgSymID,
@@ -504,7 +514,7 @@ func ExtractTypeRelations(
 
 	// Identify interface vs struct from the known symbols
 	for _, sym := range symbols {
-		if sym.Kind != SymbolKindType {
+		if sym.Kind != SymbolKindType && sym.Kind != SymbolKindInterface {
 			continue
 		}
 		obj := idToObject[sym.ID]
