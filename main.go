@@ -3,10 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 func main() {
@@ -106,7 +109,13 @@ func main() {
 	// If user specifically used .srctrldb as outArg, we produce a separate JSON with same base name
 	jsonOutput := strings.TrimSuffix(dbOutput, ".srctrldb") + ".json"
 
-	if err := ExportToJSON(jsonOutput, symbols, references); err != nil {
+	// Parse go.mod for module info (optional)
+	modules, modErr := parseGoMod(pathArg)
+	if modErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not parse go.mod: %v\n", modErr)
+	}
+
+	if err := ExportToJSON(jsonOutput, symbols, references, modules); err != nil {
 		fmt.Fprintf(os.Stderr, "Error exporting to JSON: %v\n", err)
 		os.Exit(1)
 	}
@@ -149,4 +158,43 @@ func main() {
 	}
 
 	fmt.Println("Done.")
+}
+
+// parseGoMod tries to read and parse go.mod in the current directory.
+// Returns a slice of GoModule or an empty slice if go.mod doesn't exist or can't be parsed.
+func parseGoMod(dir string) ([]GoModule, error) {
+	modPath := filepath.Join(dir, "go.mod")
+	if _, err := os.Stat(modPath); os.IsNotExist(err) {
+		return nil, nil // No go.mod file present
+	}
+
+	contents, err := ioutil.ReadFile(modPath)
+	if err != nil {
+		return nil, err
+	}
+
+	parsedFile, err := modfile.Parse("go.mod", contents, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var modules []GoModule
+
+	// Record the main module, if present
+	if parsedFile.Module != nil {
+		modules = append(modules, GoModule{
+			Path:    parsedFile.Module.Mod.Path,
+			Version: "", // main module has no explicit version here, typically
+		})
+	}
+
+	// For each "require" statement, gather path & version
+	for _, r := range parsedFile.Require {
+		modules = append(modules, GoModule{
+			Path:    r.Mod.Path,
+			Version: r.Mod.Version,
+		})
+	}
+
+	return modules, nil
 }

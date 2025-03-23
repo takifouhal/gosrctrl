@@ -10,13 +10,20 @@ import (
 type DataModel struct {
     Symbols    []Symbol    `json:"symbols"`
     References []Reference `json:"references"`
+    Modules    []GoModule  `json:"modules"`
+}
+type GoModule struct {
+    Path    string `json:"path"`
+    Version string `json:"version"`
 }
 
+
 // ExportToJSON serializes the symbols and references to a JSON file at jsonFilePath.
-func ExportToJSON(jsonFilePath string, symbols []Symbol, references []Reference) error {
+func ExportToJSON(jsonFilePath string, symbols []Symbol, references []Reference, modules []GoModule) error {
     data := DataModel{
         Symbols:    symbols,
         References: references,
+        Modules:    modules,
     }
 
     f, err := os.Create(jsonFilePath)

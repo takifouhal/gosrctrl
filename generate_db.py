@@ -41,6 +41,7 @@ def main():
 
     symbols = data.get("symbols", [])
     references = data.get("references", [])
+    modules = data.get("modules", [])
 
     # Open (and clear) the Sourcetrail DB
     db = SourcetrailDB.open(output_path, clear=True)
@@ -190,6 +191,17 @@ def main():
             else:
                 db.record_ref_usage(from_numbat_id, to_numbat_id)
 
+    # Optionally, record each module as a top-level namespace node in the DB.
+    for m in modules:
+        mod_path = m.get("path", "")
+        mod_ver = m.get("version", "")
+        if mod_path:
+            # Combining path & version for the node name
+            full_name = mod_path
+            if mod_ver:
+                full_name += f"@{mod_ver}"
+            db.record_namespace(name=full_name, parent_id=None)
+    
     db.commit()
     db.close()
 
