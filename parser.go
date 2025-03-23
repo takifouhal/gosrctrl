@@ -392,11 +392,11 @@ func ExtractReferences(
 				// Attempt to create external stub if this is from an imported package
 				objPkg := obj.Pkg()
 				if objPkg != nil {
-					pkgSymID, hasPkg := findPackageSymbolID(symbols, objPkg.Path())
+					_, hasPkg := findPackageSymbolID(symbols, objPkg.Path())
 					if hasPkg {
 						maxID++
 						stubKind := classifyObject(obj)
-	
+
 						// Check if it is actually an interface
 						if stubKind == SymbolKindType {
 							if named, okType := obj.Type().(*types.Named); okType {
@@ -405,7 +405,7 @@ func ExtractReferences(
 								}
 							}
 						}
-	
+
 						sym := Symbol{
 							ID:          maxID,
 							Name:        obj.Name(),
@@ -416,13 +416,6 @@ func ExtractReferences(
 						symbols = append(symbols, sym)
 						objectToSymbol[obj] = maxID
 						toID = maxID
-	
-						// Also add an implicit reference from package to this symbol
-						references = append(references, Reference{
-							FromID:  pkgSymID,
-							ToID:    maxID,
-							RefType: "contains",
-						})
 					} else {
 						// If we can't link it to a known package, skip
 						continue
@@ -493,6 +486,13 @@ func ExtractTypeRelations(
 ) []Reference {
 
 	var out []Reference
+
+	var maxID int
+	for _, sid := range objectToSymbol {
+		if sid > maxID {
+			maxID = sid
+		}
+	}
 
 	// Step 1: Build a list of all (struct, structID, types.Type) and (interface, interfaceID, *types.Interface)
 	typeEntry := []struct {
@@ -581,6 +581,9 @@ func ExtractTypeRelations(
 					et = pt.Elem()
 				}
 				if named, ok := et.(*types.Named); ok {
+					if _, isIface := named.Underlying().(*types.Interface); isIface {
+						continue
+					}
 					if embedID, found := objectToSymbol[named.Obj()]; found {
 						out = append(out, Reference{
 							FromID:  conc.id,
@@ -588,6 +591,42 @@ func ExtractTypeRelations(
 							RefType: "embeds",
 						})
 					}
+				}
+			}
+		}
+	}
+
+	// Step 4: For each interface, detect embedded interfaces
+	for _, ifaceE := range interfaceEntry {
+		ifa := ifaceE.ifaceType
+		for i := 0; i < ifa.NumEmbeddeds(); i++ {
+			embeddedT := ifa.EmbeddedType(i)
+			if named, ok := embeddedT.(*types.Named); ok {
+				if _, ok2 := named.Underlying().(*types.Interface); ok2 {
+					embedID, found := objectToSymbol[named.Obj()]
+					if !found {
+						objPkg := named.Obj().Pkg()
+						if objPkg != nil {
+							maxID++
+							sym := Symbol{
+								ID:          maxID,
+								Name:        named.Obj().Name(),
+								Kind:        SymbolKindInterface,
+								PackagePath: objPkg.Path(),
+								External:    true,
+							}
+							symbols = append(symbols, sym)
+							objectToSymbol[named.Obj()] = maxID
+							embedID = maxID
+						} else {
+							continue
+						}
+					}
+					out = append(out, Reference{
+						FromID:  ifaceE.id,
+						ToID:    embedID,
+						RefType: "embeds",
+					})
 				}
 			}
 		}
