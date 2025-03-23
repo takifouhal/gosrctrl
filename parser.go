@@ -509,6 +509,34 @@ func ExtractTypeRelations(
 	packageToSymbol map[*packages.Package]int,
 ) []Reference {
 
+	// addTypeUsageRef is a local helper that, given a fromSymbol ID and a Go type,
+	// appends a "usage" reference to 'out' if the type is a named type we know about.
+	var addTypeUsageRef func(fromSid int, t types.Type, out []Reference) []Reference
+	addTypeUsageRef = func(fromSid int, t types.Type, out []Reference) []Reference {
+		switch tt := t.(type) {
+		case *types.Pointer:
+			return addTypeUsageRef(fromSid, tt.Elem(), out)
+		case *types.Named:
+			if typeSid, found := objectToSymbol[tt.Obj()]; found {
+				out = append(out, Reference{
+					FromID:  fromSid,
+					ToID:    typeSid,
+					RefType: "usage",
+				})
+			}
+		case *types.Slice:
+			return addTypeUsageRef(fromSid, tt.Elem(), out)
+		case *types.Array:
+			return addTypeUsageRef(fromSid, tt.Elem(), out)
+		case *types.Chan:
+			return addTypeUsageRef(fromSid, tt.Elem(), out)
+		case *types.Map:
+			out = addTypeUsageRef(fromSid, tt.Key(), out)
+			return addTypeUsageRef(fromSid, tt.Elem(), out)
+		}
+		return out
+	}
+
 	var out []Reference
 
 	var maxID int
@@ -653,6 +681,44 @@ func ExtractTypeRelations(
 					})
 				}
 			}
+		}
+	}
+
+	// Step 5: Create usage references from each field symbol to its type (if named).
+	for _, sym := range symbols {
+		if sym.Kind != SymbolKindField {
+			continue
+		}
+		fieldObj := idToObject[sym.ID]
+		if fieldVar, ok := fieldObj.(*types.Var); ok {
+			fieldType := fieldVar.Type()
+			out = addTypeUsageRef(sym.ID, fieldType, out)
+		}
+	}
+
+	// Step 6: Create usage references from each func/method to its param and return types.
+	for _, sym := range symbols {
+		if sym.Kind != SymbolKindFunc && sym.Kind != SymbolKindMethod {
+			continue
+		}
+		fnObj := idToObject[sym.ID]
+		fn, ok := fnObj.(*types.Func)
+		if !ok {
+			continue
+		}
+		sig, _ := fn.Type().(*types.Signature)
+		if sig == nil {
+			continue
+		}
+		// Parameters
+		for i := 0; i < sig.Params().Len(); i++ {
+			paramType := sig.Params().At(i).Type()
+			out = addTypeUsageRef(sym.ID, paramType, out)
+		}
+		// Results
+		for i := 0; i < sig.Results().Len(); i++ {
+			resultType := sig.Results().At(i).Type()
+			out = addTypeUsageRef(sym.ID, resultType, out)
 		}
 	}
 

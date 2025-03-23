@@ -207,8 +207,8 @@ def main():
                 parent_id=pkg_parent_id,
                 is_indexed=indexed
             )
-        elif sym_kind == "type":
-            recorded_id = db.record_class(
+        elif sym_kind == "field":
+            recorded_id = db.record_field(
                 name=sym_name,
                 parent_id=pkg_parent_id,
                 is_indexed=indexed
@@ -237,10 +237,11 @@ def main():
                     parent_id=pkg_parent_id,
                     is_indexed=indexed
                 )
-        elif sym_kind in ("var", "const"):
-            recorded_id = db.record_global_variable(
+        elif sym_kind == "func":
+            recorded_id = db.record_function(
                 name=sym_name,
                 parent_id=pkg_parent_id,
+                
                 is_indexed=indexed
             )
         elif sym_kind == "func":
@@ -262,10 +263,11 @@ def main():
                     parent_id=parent_id,
                     is_indexed=indexed
                 )
-            else:
-                recorded_id = db.record_function(
+            elif sym_kind == "method":
+                recorded_id = db.record_method(
                     name=sym_name,
-                    parent_id=pkg_parent_id,
+                    parent_id=parent_id,
+                    
                     is_indexed=indexed
                 )
         elif sym_kind == "method":
