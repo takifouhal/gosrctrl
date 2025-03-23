@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -13,13 +14,14 @@ import (
 type SymbolKind string
 
 const (
-	SymbolKindPackage SymbolKind = "package"
-	SymbolKindType    SymbolKind = "type"
-	SymbolKindVar     SymbolKind = "var"
-	SymbolKindField   SymbolKind = "field"
-	SymbolKindFunc    SymbolKind = "func"
-	SymbolKindMethod  SymbolKind = "method"
-	SymbolKindConst   SymbolKind = "const"
+	SymbolKindPackage   SymbolKind = "package"
+	SymbolKindType      SymbolKind = "type"
+	SymbolKindVar       SymbolKind = "var"
+	SymbolKindField     SymbolKind = "field"
+	SymbolKindFunc      SymbolKind = "func"
+	SymbolKindMethod    SymbolKind = "method"
+	SymbolKindConst     SymbolKind = "const"
+	SymbolKindInterface SymbolKind = "interface"
 )
 
 // Symbol stores metadata about a single declared symbol in the codebase
@@ -32,6 +34,7 @@ type Symbol struct {
 	Line        int        // Line number in the file
 	Column      int        // Column number in the file
 	Receiver    string     // Receiver type (for methods)
+	Sig         string     // Signature or definition snippet (for funcs, interfaces, etc.)
 }
 
 // Reference captures a usage relationship between two symbols.
@@ -99,6 +102,7 @@ func ExtractSymbols(pkgs []*packages.Package) (
 			Line:        0,
 			Column:      0,
 			Receiver:    "",
+			Sig:         "",
 		}
 		symbols = append(symbols, packageSymbol)
 		packageToSymbol[pkg] = currentID
@@ -134,8 +138,10 @@ func ExtractSymbols(pkgs []*packages.Package) (
 			// If it's a function, check if there's a receiver (making it a method)
 			if fn, ok := obj.(*types.Func); ok {
 				sig, _ := fn.Type().(*types.Signature)
-				if sig != nil && sig.Recv() != nil {
-					receiver = sig.Recv().Type().String()
+				if sig != nil {
+					if sig.Recv() != nil {
+						receiver = sig.Recv().Type().String()
+					}
 				}
 			}
 
@@ -149,6 +155,16 @@ func ExtractSymbols(pkgs []*packages.Package) (
 				Line:        pos.Line,
 				Column:      pos.Column,
 				Receiver:    receiver,
+				Sig:         "",
+			}
+
+			// Now set the signature for functions
+			if fn, ok := obj.(*types.Func); ok {
+				sig, _ := fn.Type().(*types.Signature)
+				if sig != nil {
+					// Build a formatted signature string, including receiver if present
+					symbol.Sig = buildFuncSignature(fn, sig)
+				}
 			}
 
 			// Special case for imports (types.PkgName)
@@ -158,11 +174,11 @@ func ExtractSymbols(pkgs []*packages.Package) (
 
 				// Create an import reference from the current package to this imported package
 				importRefs = append(importRefs, Reference{
-					FromID: packageToSymbol[pkg],
-					ToID:   currentID,
-					File:   pos.Filename,
-					Line:   pos.Line,
-					Column: pos.Column,
+					FromID:  packageToSymbol[pkg],
+					ToID:    currentID,
+					File:    pos.Filename,
+					Line:    pos.Line,
+					Column:  pos.Column,
 					RefType: "import",
 				})
 			}
@@ -189,7 +205,10 @@ func ExtractSymbols(pkgs []*packages.Package) (
 		if s.Kind == SymbolKindType {
 			obj := idToObject[s.ID]
 			if typeName, ok := obj.(*types.TypeName); ok {
-				if st, ok := typeName.Type().Underlying().(*types.Struct); ok {
+				under := typeName.Type().Underlying()
+
+				// Detect struct fields
+				if st, ok := under.(*types.Struct); ok {
 					for i := 0; i < st.NumFields(); i++ {
 						fieldObj := st.Field(i)
 						if fieldID, found := objectToSymbol[fieldObj]; found {
@@ -199,12 +218,80 @@ func ExtractSymbols(pkgs []*packages.Package) (
 							symbols[fieldIdx].Receiver = typeName.Type().String()
 						}
 					}
+				} else if iface, ok := under.(*types.Interface); ok {
+					// Mark this as an interface
+					symbols[symbolIndexMap[s.ID]].Kind = SymbolKindInterface
+					// Build an interface signature snippet
+					symbols[symbolIndexMap[s.ID]].Sig = buildInterfaceSignature(typeName, iface)
 				}
 			}
 		}
 	}
 
 	return symbols, importRefs, objectToSymbol, packageToSymbol
+}
+
+// buildFuncSignature creates a hover text like: func (Receiver) Name(param1 Type1, param2 Type2) (ret Type)
+func buildFuncSignature(fn *types.Func, sig *types.Signature) string {
+	// We'll manually construct a string for readability
+	// e.g. "func (r *Receiver) MyMethod(a int, b string) (bool, error)"
+	recv := ""
+	if sig.Recv() != nil {
+		recvType := sig.Recv().Type().String()
+		recv = "(" + recvType + ") "
+	}
+
+	params := ""
+	for i := 0; i < sig.Params().Len(); i++ {
+		p := sig.Params().At(i)
+		if i > 0 {
+			params += ", "
+		}
+		params += p.Name() + " " + p.Type().String()
+	}
+
+	results := ""
+	if sig.Results().Len() > 0 {
+		// If there's more than one result, we wrap them in parentheses
+		if sig.Results().Len() == 1 {
+			r := sig.Results().At(0)
+			results = r.Type().String()
+		} else {
+			var rr []string
+			for i := 0; i < sig.Results().Len(); i++ {
+				r := sig.Results().At(i)
+				rr = append(rr, r.Name()+" "+r.Type().String())
+			}
+			results = "(" + strings.Join(rr, ", ") + ")"
+		}
+	}
+
+	signature := "func " + recv + fn.Name() + "(" + params + ")"
+	if results != "" {
+		signature += " " + results
+	}
+	return signature
+}
+
+// buildInterfaceSignature creates a short snippet for an interface symbol
+// e.g. "type MyInterface interface { Method1(...) ... }"
+func buildInterfaceSignature(typeName *types.TypeName, iface *types.Interface) string {
+	// We'll gather the interface methods:
+	var sb strings.Builder
+	sb.WriteString("type ")
+	sb.WriteString(typeName.Name())
+	sb.WriteString(" interface {\n")
+	for i := 0; i < iface.NumMethods(); i++ {
+		m := iface.Method(i)
+		sig, _ := m.Type().(*types.Signature)
+		if sig != nil {
+			sb.WriteString("    ")
+			sb.WriteString(buildFuncSignature(m, sig)[5:]) // strip off the "func "
+			sb.WriteString("\n")
+		}
+	}
+	sb.WriteString("}")
+	return sb.String()
 }
 
 // classifyObject inspects a types.Object to determine its symbol kind.
@@ -334,9 +421,9 @@ func ExtractTypeRelations(
 
 	// Step 1: Build a list of all (struct, structID, types.Type) and (interface, interfaceID, *types.Interface)
 	typeEntry := []struct {
-		id   int
-		obj  types.Object
-		typ  types.Type
+		id  int
+		obj types.Object
+		typ types.Type
 	}{}
 	interfaceEntry := []struct {
 		id        int
@@ -375,9 +462,9 @@ func ExtractTypeRelations(
 		} else {
 			// Must be a struct or other concrete type
 			typeEntry = append(typeEntry, struct {
-				id   int
-				obj  types.Object
-				typ  types.Type
+				id  int
+				obj types.Object
+				typ types.Type
 			}{
 				id:  sym.ID,
 				obj: obj,

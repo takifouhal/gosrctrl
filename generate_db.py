@@ -172,6 +172,9 @@ def main():
         package_path = sym.get("PackagePath", "")
         receiver_str = sym.get("Receiver", "")
 
+        # We'll use the symbol's Sig for hover text if present
+        hover_display = sym.get("Sig", "")
+
         # Identify (or create) the package namespace that owns this symbol
         pkg_parent_id = None
         if package_path:
@@ -182,17 +185,23 @@ def main():
             # Just map the package itself to the namespace
             # (We already created it above, so record that as the symbol ID.)
             recorded_id = pkg_parent_id
+        elif sym_kind == "interface":
+            recorded_id = db.record_class(
+                name=sym_name,
+                parent_id=pkg_parent_id,
+                postfix="(interface)"
+            )
         elif sym_kind == "type":
-            # A user-defined type (struct, interface, etc.); record as a class (or future enhancement).
-            # Parent is the package's namespace
-            recorded_id = db.record_class(name=sym_name, parent_id=pkg_parent_id)
+            # A user-defined non-interface type
+            recorded_id = db.record_class(
+                name=sym_name,
+                parent_id=pkg_parent_id
+            )
         elif sym_kind == "field":
-            # This is a struct field, so we try to find the parent type if the receiver string is known
             if receiver_str:
                 raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
                 potential_type_name = raw_receiver.split(".")[-1]
                 parent_id = None
-                # Attempt to find the type symbol
                 for s2 in symbols:
                     if (s2["Kind"] == "type" and
                         s2["Name"] == potential_type_name and
@@ -203,19 +212,16 @@ def main():
                     parent_id = pkg_parent_id
                 recorded_id = db.record_field(name=sym_name, parent_id=parent_id)
             else:
-                # default to a field under package
                 recorded_id = db.record_field(name=sym_name, parent_id=pkg_parent_id)
         elif sym_kind in ("var", "const"):
-            # Global variable or constant => treat as a field or global var
             recorded_id = db.record_global_variable(name=sym_name, parent_id=pkg_parent_id)
         elif sym_kind in ("func", "method"):
-            # If there's a receiver, treat as a method
             if receiver_str:
                 raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
                 potential_type_name = raw_receiver.split(".")[-1]
                 parent_id = None
                 for s2 in symbols:
-                    if (s2["Kind"] == "type" and
+                    if (s2["Kind"] in ("type", "interface") and
                         s2["Name"] == potential_type_name and
                         s2.get("PackagePath", "") == package_path):
                         parent_id = symbol_id_map.get(s2["ID"])
@@ -224,7 +230,6 @@ def main():
                     parent_id = pkg_parent_id
                 recorded_id = db.record_method(name=sym_name, parent_id=parent_id)
             else:
-                # Standalone function in the package
                 recorded_id = db.record_function(name=sym_name, parent_id=pkg_parent_id)
         else:
             # Fallback: just record as a field
