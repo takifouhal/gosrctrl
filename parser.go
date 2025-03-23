@@ -110,6 +110,18 @@ func ExtractSymbols(pkgs []*packages.Package) (
 				continue
 			}
 
+			// Skip local variables or constants (non-struct fields) by checking parent scope
+			switch v := obj.(type) {
+			case *types.Var:
+				if !v.IsField() && v.Parent() != pkg.Types.Scope() {
+					continue
+				}
+			case *types.Const:
+				if v.Parent() != pkg.Types.Scope() {
+					continue
+				}
+			}
+
 			pos := pkg.Fset.Position(id.Pos())
 			if !pos.IsValid() {
 				// Ignore definitions with invalid positions
