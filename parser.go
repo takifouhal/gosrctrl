@@ -566,15 +566,18 @@ func ExtractTypeRelations(
 		for i := 0; i < st.NumFields(); i++ {
 			f := st.Field(i)
 			if f.Embedded() {
-				// If we know the field's symbol ID, create an "embeds" reference
-				if embedID, found := objectToSymbol[f]; found {
-					// "FromID" = struct, "ToID" = embedded struct
-					r := Reference{
-						FromID:  conc.id,
-						ToID:    embedID,
-						RefType: "embeds",
+				et := f.Type()
+				if pt, ok := et.(*types.Pointer); ok {
+					et = pt.Elem()
+				}
+				if named, ok := et.(*types.Named); ok {
+					if embedID, found := objectToSymbol[named.Obj()]; found {
+						out = append(out, Reference{
+							FromID:  conc.id,
+							ToID:    embedID,
+							RefType: "embeds",
+						})
 					}
-					out = append(out, r)
 				}
 			}
 		}
