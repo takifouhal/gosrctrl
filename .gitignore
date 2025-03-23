@@ -42,6 +42,11 @@ output.json
 # Misc
 .DS_Store
 .idea/
-.vscode/
+# Keep .vscode settings but ignore other VSCode files
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
 *.swp
 *.swo 

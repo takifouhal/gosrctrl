@@ -13,32 +13,45 @@ GoSrcCtrl parses Go source code and generates output that can be imported into S
 
 - Go 1.18+ 
 - Python 3.8+
+- Make (for automated setup)
 
 ## Setup
 
 1. Clone this repository:
 
-```
+```bash
 git clone <repository-url>
 cd gosrctrl
 ```
 
-2. Set up Go dependencies:
+2. Automated setup with Make:
 
-```
-go get golang.org/x/tools/go/packages
+```bash
+# Setup both Go and Python environments (recommended)
+make
+
+# For help with other make commands
+make help
 ```
 
-3. Set up Python virtual environment:
+3. Manual setup (alternative to Make):
 
-```
-# Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate  # On Windows, use: venv\Scripts\activate
+   a. Set up Go dependencies:
 
-# Install required Python packages
-pip install -r requirements.txt
-```
+   ```bash
+   go get golang.org/x/tools/go/packages
+   ```
+
+   b. Set up Python virtual environment:
+
+   ```bash
+   # Create and activate virtual environment
+   python3 -m venv venv
+   source venv/bin/activate  # On Windows, use: venv\Scripts\activate
+
+   # Install required Python packages
+   pip install -r requirements.txt
+   ```
 
 ## VSCode Integration
 
@@ -56,13 +69,13 @@ In the future, the tool will be used as follows:
 
 1. Parse Go source code with the Go parser:
 
-```
+```bash
 go run main.go -src /path/to/go/project -out output.json
 ```
 
 2. Process the output and create a Sourcetrail database:
 
-```
+```bash
 # Make sure the virtual environment is activated
 source venv/bin/activate  # On Windows, use: venv\Scripts\activate
 
