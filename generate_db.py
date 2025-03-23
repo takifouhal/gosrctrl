@@ -163,28 +163,22 @@ def main():
     # We'll store package namespace IDs here
     package_map = {}
 
-    # STEP 2: Insert all symbols. For "package" kind, we create a namespace node;
-    # for other kinds, we record them under their package parent as before.
+    # STEP 2: Insert all symbols.
     for sym in symbols:
         sym_id = sym["ID"]
         sym_name = sym["Name"]
         sym_kind = sym["Kind"]
         package_path = sym.get("PackagePath", "")
         receiver_str = sym.get("Receiver", "")
-
-        # We'll use the symbol's Sig for hover text if present
         hover_display = sym.get("Sig", "")
+        indexed = not sym.get("External", False)
 
         # Identify (or create) the package namespace that owns this symbol
         pkg_parent_id = None
         if package_path:
             pkg_parent_id = get_or_create_package_namespace(package_path, module_map, db, package_map)
 
-        # Decide how to record the symbol
-        # Decide how to record the symbol
-        indexed = not sym.get("External", False)
-
-        # If ParentID is provided, try that first.
+        # If the parser assigned a ParentID, we try that first.
         parent_id = pkg_parent_id
         stored_parent_id = sym.get("ParentID", 0)
         if stored_parent_id != 0:
@@ -192,107 +186,102 @@ def main():
             if mapped_parent_id is not None:
                 parent_id = mapped_parent_id
 
+        # Decide how to record the symbol based on sym_kind
         if sym_kind == "package":
-            # Just map the package itself to the namespace
+            # The package itself maps to the namespace
             recorded_id = pkg_parent_id
+
         elif sym_kind == "struct":
             recorded_id = db.record_struct(
                 name=sym_name,
                 parent_id=parent_id,
+                hover_display=hover_display,
                 is_indexed=indexed
             )
+
         elif sym_kind == "interface":
             recorded_id = db.record_interface(
                 name=sym_name,
-                parent_id=pkg_parent_id,
+                parent_id=parent_id,
+                hover_display=hover_display,
                 is_indexed=indexed
             )
+
         elif sym_kind == "field":
-            recorded_id = db.record_field(
-                name=sym_name,
-                parent_id=pkg_parent_id,
-                is_indexed=indexed
-            )
-        elif sym_kind == "field":
-            if receiver_str:
+            # If we have a "receiver_str", try to locate the parent type
+            if stored_parent_id == 0 and receiver_str:
                 raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
                 potential_type_name = raw_receiver.split(".")[-1]
-                parent_id = None
+                parent_found = None
                 for s2 in symbols:
-                    if (s2["Kind"] == "type" and
-                        s2["Name"] == potential_type_name and
-                        s2.get("PackagePath", "") == package_path):
-                        parent_id = symbol_id_map.get(s2["ID"])
-                        break
-                if parent_id is None:
-                    parent_id = pkg_parent_id
-                recorded_id = db.record_field(
-                    name=sym_name,
-                    parent_id=parent_id,
-                    is_indexed=indexed
-                )
-            else:
-                recorded_id = db.record_field(
-                    name=sym_name,
-                    parent_id=pkg_parent_id,
-                    is_indexed=indexed
-                )
+                    if (
+                        s2["Kind"] in ("type", "struct", "interface")
+                        and s2["Name"] == potential_type_name
+                        and s2.get("PackagePath", "") == package_path
+                    ):
+                        candidate_numbat_id = symbol_id_map.get(s2["ID"])
+                        if candidate_numbat_id is not None:
+                            parent_found = candidate_numbat_id
+                            break
+                if parent_found is None:
+                    parent_found = pkg_parent_id
+                parent_id = parent_found
+
+            recorded_id = db.record_field(
+                name=sym_name,
+                parent_id=parent_id,
+                hover_display=hover_display,
+                is_indexed=indexed
+            )
+
         elif sym_kind == "func":
             recorded_id = db.record_function(
                 name=sym_name,
-                parent_id=pkg_parent_id,
-                
+                parent_id=parent_id,
+                hover_display=hover_display,
                 is_indexed=indexed
             )
-        elif sym_kind == "func":
-            if receiver_str:
-                # Technically won't happen, but let's be safe
-                raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
-                potential_type_name = raw_receiver.split(".")[-1]
-                parent_id = None
-                for s2 in symbols:
-                    if (s2["Kind"] in ("type", "struct", "interface") and
-                        s2["Name"] == potential_type_name and
-                        s2.get("PackagePath", "") == package_path):
-                        parent_id = symbol_id_map.get(s2["ID"])
-                        break
-                if parent_id is None:
-                    parent_id = pkg_parent_id
-                recorded_id = db.record_function(
-                    name=sym_name,
-                    parent_id=parent_id,
-                    is_indexed=indexed
-                )
-            elif sym_kind == "method":
-                recorded_id = db.record_method(
-                    name=sym_name,
-                    parent_id=parent_id,
-                    
-                    is_indexed=indexed
-                )
+
         elif sym_kind == "method":
-            # For methods, there must be a receiver
+            # For methods, we have a receiver string. Locate the parent struct/interface if possible.
             raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
             potential_type_name = raw_receiver.split(".")[-1]
-            parent_id = None
+            parent_found = None
             for s2 in symbols:
-                if (s2["Kind"] in ("type", "struct", "interface") and
-                    s2["Name"] == potential_type_name and
-                    s2.get("PackagePath", "") == package_path):
-                    parent_id = symbol_id_map.get(s2["ID"])
-                    break
-            if parent_id is None:
-                parent_id = pkg_parent_id
+                if (
+                    s2["Kind"] in ("type", "struct", "interface")
+                    and s2["Name"] == potential_type_name
+                    and s2.get("PackagePath", "") == package_path
+                ):
+                    candidate_numbat_id = symbol_id_map.get(s2["ID"])
+                    if candidate_numbat_id is not None:
+                        parent_found = candidate_numbat_id
+                        break
+            if parent_found is None:
+                parent_found = pkg_parent_id
+
             recorded_id = db.record_method(
                 name=sym_name,
-                parent_id=parent_id,
+                parent_id=parent_found,
+                hover_display=hover_display,
                 is_indexed=indexed
             )
+
+        elif sym_kind in ("var", "const"):
+            # For top-level vars/consts, represent as a GLOBAL_VARIABLE
+            recorded_id = db.record_global_variable(
+                name=sym_name,
+                parent_id=parent_id,
+                hover_display=hover_display,
+                is_indexed=indexed
+            )
+
         else:
-            # Fallback: just record as a field
+            # Fallback: treat anything else as a field or generic type usage
             recorded_id = db.record_field(
                 name=sym_name,
-                parent_id=pkg_parent_id,
+                parent_id=parent_id,
+                hover_display=hover_display,
                 is_indexed=indexed
             )
 
@@ -318,7 +307,6 @@ def main():
         from_numbat_id = symbol_id_map.get(from_id)
         to_numbat_id = symbol_id_map.get(to_id)
         if from_numbat_id is not None and to_numbat_id is not None:
-            # Skip function->package usage references that may appear spurious
             from_sym = next((s for s in symbols if s["ID"] == from_id), None)
             to_sym = next((s for s in symbols if s["ID"] == to_id), None)
             if not (from_sym and to_sym):
@@ -337,21 +325,20 @@ def main():
                 and to_sym["Kind"] in ("var", "const")):
                 continue
 
+            # Now record the reference
             if ref_type == "call":
                 ref_id = db.record_ref_call(from_numbat_id, to_numbat_id)
             elif ref_type in ("implements", "embeds"):
-                # "implements" or "embeds" => use inheritance
+                # "implements" or "embeds" => use inheritance in Numbat
                 ref_id = db.record_ref_inheritance(from_numbat_id, to_numbat_id)
             elif ref_type == "import":
                 ref_id = db.record_ref_import(from_numbat_id, to_numbat_id)
             elif ref_type == "write":
-                # Numbat doesn't have a separate "write" edge, so record as usage
-                # Optionally add special hover text or logging if needed
                 ref_id = db.record_ref_usage(from_numbat_id, to_numbat_id)
             else:
-                # default usage
                 ref_id = db.record_ref_usage(from_numbat_id, to_numbat_id)
 
+            # Record reference location if available
             file_path = ref.get("File", "")
             line = ref.get("Line", 0)
             col = ref.get("Column", 0)
@@ -365,7 +352,3 @@ def main():
     db.close()
 
     print(f"✅ Successfully created Sourcetrail DB at: {output_path}")
-    print(f"✅ Successfully created Sourcetrail DB at: {output_path}")
-
-if __name__ == '__main__':
-    main()
