@@ -48,5 +48,19 @@ func main() {
 	fmt.Println("---------------------------------------------")
 	fmt.Printf("Project path: %s\n", pathArg)
 	fmt.Printf("Output file : %s\n", outArg)
-	fmt.Println("\n(Parsing logic to be implemented in future tasks.)")
+
+	// Load Go packages to parse
+	pkgs, loadErr := LoadPackages(pathArg)
+	if loadErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", loadErr)
+		os.Exit(1)
+	}
+
+	// For simple verification, print basic info about the loaded packages
+	fmt.Printf("\nParsed %d package(s):\n", len(pkgs))
+	for _, pkg := range pkgs {
+		fmt.Printf("- Package: %s, Files: %d\n", pkg.Name, len(pkg.GoFiles))
+	}
+
+	fmt.Println("\n(Parsing logic to be further developed in future tasks.)")
 }
