@@ -16,6 +16,7 @@ type SymbolKind string
 const (
 	SymbolKindPackage   SymbolKind = "package"
 	SymbolKindType      SymbolKind = "type"
+	SymbolKindStruct    SymbolKind = "struct"
 	SymbolKindVar       SymbolKind = "var"
 	SymbolKindField     SymbolKind = "field"
 	SymbolKindFunc      SymbolKind = "func"
@@ -208,8 +209,10 @@ func ExtractSymbols(pkgs []*packages.Package) (
 			if typeName, ok := obj.(*types.TypeName); ok {
 				under := typeName.Type().Underlying()
 
-				// Detect struct fields
 				if st, ok := under.(*types.Struct); ok {
+					// Mark this symbol as a struct
+					symbols[symbolIndexMap[s.ID]].Kind = SymbolKindStruct
+					// Now record the embedded fields as before
 					for i := 0; i < st.NumFields(); i++ {
 						fieldObj := st.Field(i)
 						if fieldID, found := objectToSymbol[fieldObj]; found {
@@ -220,11 +223,10 @@ func ExtractSymbols(pkgs []*packages.Package) (
 						}
 					}
 				} else if iface, ok := under.(*types.Interface); ok {
-					// Mark this as an interface
 					symbols[symbolIndexMap[s.ID]].Kind = SymbolKindInterface
-					// Build an interface signature snippet
 					symbols[symbolIndexMap[s.ID]].Sig = buildInterfaceSignature(typeName, iface)
 				}
+				// Else it remains SymbolKindType for other named types (aliases, etc.)
 			}
 		}
 	}

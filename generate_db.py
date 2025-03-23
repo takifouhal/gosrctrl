@@ -187,15 +187,19 @@ def main():
             # Just map the package itself to the namespace
             # (We already created it above, so record that as the symbol ID.)
             recorded_id = pkg_parent_id
-        elif sym_kind == "interface":
-            recorded_id = db.record_class(
+        elif sym_kind == "struct":
+            recorded_id = db.record_struct(
                 name=sym_name,
                 parent_id=pkg_parent_id,
-                postfix="(interface)",
+                is_indexed=indexed
+            )
+        elif sym_kind == "interface":
+            recorded_id = db.record_interface(
+                name=sym_name,
+                parent_id=pkg_parent_id,
                 is_indexed=indexed
             )
         elif sym_kind == "type":
-            # A user-defined non-interface type
             recorded_id = db.record_class(
                 name=sym_name,
                 parent_id=pkg_parent_id,
@@ -231,20 +235,21 @@ def main():
                 parent_id=pkg_parent_id,
                 is_indexed=indexed
             )
-        elif sym_kind in ("func", "method"):
+        elif sym_kind == "func":
             if receiver_str:
+                # Technically won't happen, but let's be safe
                 raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
                 potential_type_name = raw_receiver.split(".")[-1]
                 parent_id = None
                 for s2 in symbols:
-                    if (s2["Kind"] in ("type", "interface") and
+                    if (s2["Kind"] in ("type", "struct", "interface") and
                         s2["Name"] == potential_type_name and
                         s2.get("PackagePath", "") == package_path):
                         parent_id = symbol_id_map.get(s2["ID"])
                         break
                 if parent_id is None:
                     parent_id = pkg_parent_id
-                recorded_id = db.record_method(
+                recorded_id = db.record_function(
                     name=sym_name,
                     parent_id=parent_id,
                     is_indexed=indexed
@@ -255,6 +260,24 @@ def main():
                     parent_id=pkg_parent_id,
                     is_indexed=indexed
                 )
+        elif sym_kind == "method":
+            # For methods, there must be a receiver
+            raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
+            potential_type_name = raw_receiver.split(".")[-1]
+            parent_id = None
+            for s2 in symbols:
+                if (s2["Kind"] in ("type", "struct", "interface") and
+                    s2["Name"] == potential_type_name and
+                    s2.get("PackagePath", "") == package_path):
+                    parent_id = symbol_id_map.get(s2["ID"])
+                    break
+            if parent_id is None:
+                parent_id = pkg_parent_id
+            recorded_id = db.record_method(
+                name=sym_name,
+                parent_id=parent_id,
+                is_indexed=indexed
+            )
         else:
             # Fallback: just record as a field
             recorded_id = db.record_field(
