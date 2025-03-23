@@ -421,11 +421,13 @@ func ExtractReferences(
 						maxID++
 						stubKind := classifyObject(obj)
 
-						// Check if it is actually an interface
+						// Check if it is actually an interface or struct
 						if stubKind == SymbolKindType {
 							if named, okType := obj.Type().(*types.Named); okType {
 								if _, isIface := named.Underlying().(*types.Interface); isIface {
 									stubKind = SymbolKindInterface
+								} else if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+									stubKind = SymbolKindStruct
 								}
 							}
 						}

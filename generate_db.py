@@ -337,6 +337,10 @@ def main():
             db.record_symbol_location(recorded_id, file_id, start_line, start_col, end_line, end_col)
 
     # STEP 3: Insert references (calls, usages, imports, etc.)
+    print(f"DEBUG: Processing {len(references)} references", file=sys.stderr)
+    type_relation_count = sum(1 for ref in references if ref.get("RefType") in ("implements", "embeds"))
+    print(f"DEBUG: Found {type_relation_count} interface-implementation and embedding relationships", file=sys.stderr)
+    
     for ref in references:
         from_id = ref["FromID"]
         to_id = ref["ToID"]
@@ -366,6 +370,12 @@ def main():
             if ref_type == "call":
                 ref_id = db.record_ref_call(from_numbat_id, to_numbat_id)
             elif ref_type in ("implements", "embeds"):
+                # Log details about inheritance relationships
+                from_sym_name = from_sym.get("Name", "unknown") if from_sym else "unknown"
+                to_sym_name = to_sym.get("Name", "unknown") if to_sym else "unknown"
+                from_kind = from_sym.get("Kind", "unknown") if from_sym else "unknown"
+                to_kind = to_sym.get("Kind", "unknown") if to_sym else "unknown"
+                print(f"DEBUG: Recording {ref_type} relationship: {from_kind} '{from_sym_name}' → {to_kind} '{to_sym_name}'", file=sys.stderr)
                 ref_id = db.record_ref_inheritance(from_numbat_id, to_numbat_id)
             elif ref_type == "import":
                 ref_id = db.record_ref_import(from_numbat_id, to_numbat_id)
