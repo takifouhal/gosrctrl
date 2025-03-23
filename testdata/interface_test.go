@@ -26,3 +26,23 @@ type EmbeddingInterface interface {
 	TestInterface // Embedded interface
 	ExtraMethod() int
 }
+
+// MultiLevelEmbed demonstrates multi-level embedding
+type MultiLevelEmbed interface {
+	EmbeddingInterface // Embedded interface that itself embeds another interface
+	DeepMethod() bool
+}
+
+// IndirectImplementor doesn't directly implement any interface
+// but inherits implementation from an embedded struct
+type IndirectImplementor struct {
+	TestImplementor // Will inherit DoSomething method
+	IndirectField string
+}
+
+// ComplexEmbed demonstrates a struct that embeds multiple types
+type ComplexEmbed struct {
+	TestImplementor  // Embedded struct
+	*EmbeddingStruct // Embedded pointer to struct
+	DirectField string
+}

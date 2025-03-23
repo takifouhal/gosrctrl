@@ -88,8 +88,47 @@ func main() {
 	references = append(references, typeRelations...)
 
 	fmt.Printf("\nExtracted %d additional type-relations:\n", len(typeRelations))
+	
+	// Count different types of relationships
+	implCount := 0
+	embedCount := 0
+	usageCount := 0
+	
 	for _, r := range typeRelations {
-		fmt.Printf("- from: %d to: %d, relationship: %s\n", r.FromID, r.ToID, r.RefType)
+		switch r.RefType {
+		case "implements":
+			implCount++
+		case "embeds":
+			embedCount++
+		case "usage":
+			usageCount++
+		}
+	}
+	
+	fmt.Printf("- Interface implementations: %d\n", implCount)
+	fmt.Printf("- Struct/interface embeddings: %d\n", embedCount)
+	fmt.Printf("- Type usage references: %d\n", usageCount)
+	
+	// Print detailed relationship information for debugging
+	if len(typeRelations) <= 20 { // Only show details for smaller projects
+		fmt.Println("\nDetailed type relationships:")
+		for _, r := range typeRelations {
+			fromSym := findSymbolByID(symbols, r.FromID)
+			toSym := findSymbolByID(symbols, r.ToID)
+			
+			fromName := "unknown"
+			toName := "unknown"
+			
+			if fromSym != nil {
+				fromName = fmt.Sprintf("%s (%s)", fromSym.Name, fromSym.Kind)
+			}
+			
+			if toSym != nil {
+				toName = fmt.Sprintf("%s (%s)", toSym.Name, toSym.Kind)
+			}
+			
+			fmt.Printf("- %s → %s, relationship: %s\n", fromName, toName, r.RefType)
+		}
 	}
 
 	fmt.Println("\n(References extraction logic can be refined to distinguish calls, reads, etc.)")
@@ -255,5 +294,15 @@ func checkDirectoryWritable(dirPath string) error {
 	tmpFile.Close()
 	os.Remove(tmpFile.Name())
 
+	return nil
+}
+
+// findSymbolByID returns the symbol with the given ID, or nil if not found
+func findSymbolByID(symbols []Symbol, id int) *Symbol {
+	for i := range symbols {
+		if symbols[i].ID == id {
+			return &symbols[i]
+		}
+	}
 	return nil
 }

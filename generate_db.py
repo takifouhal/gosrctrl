@@ -375,7 +375,26 @@ def main():
                 to_sym_name = to_sym.get("Name", "unknown") if to_sym else "unknown"
                 from_kind = from_sym.get("Kind", "unknown") if from_sym else "unknown"
                 to_kind = to_sym.get("Kind", "unknown") if to_sym else "unknown"
-                print(f"DEBUG: Recording {ref_type} relationship: {from_kind} '{from_sym_name}' → {to_kind} '{to_sym_name}'", file=sys.stderr)
+                
+                if ref_type == "implements":
+                    # In Go, 'implements' means a concrete type implements an interface
+                    # We check that the relationship makes semantic sense
+                    if to_kind != "interface" and to_kind != "unknown":
+                        print(f"WARNING: Unusual implements relationship: {from_kind} '{from_sym_name}' → {to_kind} '{to_sym_name}' (target should be interface)", file=sys.stderr)
+                        
+                    print(f"DEBUG: Recording implementation relationship: {from_kind} '{from_sym_name}' → {to_kind} '{to_sym_name}'", file=sys.stderr)
+                else:  # embeds
+                    # For embedding, we want to show composition relationships
+                    # This can be struct→struct or interface→interface
+                    if from_kind == "struct" and to_kind != "struct" and to_kind != "unknown":
+                        print(f"WARNING: Unusual struct embedding: {from_kind} '{from_sym_name}' embeds {to_kind} '{to_sym_name}' (not a struct)", file=sys.stderr)
+                    
+                    if from_kind == "interface" and to_kind != "interface" and to_kind != "unknown":
+                        print(f"WARNING: Unusual interface embedding: {from_kind} '{from_sym_name}' embeds {to_kind} '{to_sym_name}' (not an interface)", file=sys.stderr)
+                        
+                    print(f"DEBUG: Recording embedding relationship: {from_kind} '{from_sym_name}' → {to_kind} '{to_sym_name}'", file=sys.stderr)
+                
+                # Both 'implements' and 'embeds' are mapped to inheritance in Sourcetrail
                 ref_id = db.record_ref_inheritance(from_numbat_id, to_numbat_id)
             elif ref_type == "import":
                 ref_id = db.record_ref_import(from_numbat_id, to_numbat_id)

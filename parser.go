@@ -506,55 +506,91 @@ func ExtractTypeRelations(
 ) []Reference {
 
 	var out []Reference
+	var implementsCount, structEmbedCount, ifaceEmbedCount, typeUsageCount int
 
 	maxID := getMaxSymbolID(objectToSymbol)
 
+	// Build a reverse lookup from symbol ID to types.Object
 	idToObject := make(map[int]types.Object, len(objectToSymbol))
 	for obj, sid := range objectToSymbol {
 		idToObject[sid] = obj
 	}
 
-	// We'll gather interface and type entries
+	// We'll gather interface and type entries with necessary metadata
 	typeEntry := []struct {
-		id  int
-		obj types.Object
-		typ types.Type
+		id        int            // Symbol ID
+		obj       types.Object   // TypeName object
+		typ       types.Type     // Named type (types.Named)
+		name      string         // Type name
+		pkgPath   string         // Package path
+		isStruct  bool           // Whether this is a struct type
 	}{}
+	
 	interfaceEntry := []struct {
-		id        int
-		obj       types.Object
-		ifaceType *types.Interface
+		id        int               // Symbol ID
+		obj       types.Object      // TypeName object
+		ifaceType *types.Interface  // Interface type
+		name      string            // Interface name
+		pkgPath   string            // Package path
+		methodSet map[string]bool   // Set of method names for quick lookup
 	}{}
 
+	// First pass: categorize all types and interfaces
 	for _, sym := range symbols {
-		if sym.Kind != SymbolKindType && sym.Kind != SymbolKindInterface {
+		if sym.Kind != SymbolKindType && sym.Kind != SymbolKindStruct && sym.Kind != SymbolKindInterface {
 			continue
 		}
+		
 		obj := idToObject[sym.ID]
-		typeName, _ := obj.(*types.TypeName)
-		if typeName == nil {
+		typeName, ok := obj.(*types.TypeName)
+		if !ok || typeName == nil {
 			continue
 		}
+		
 		typ := typeName.Type()
+		
+		// Handle interfaces
 		if iface, ok := typ.Underlying().(*types.Interface); ok {
+			// Build a set of method names for this interface
+			methodSet := make(map[string]bool)
+			for i := 0; i < iface.NumMethods(); i++ {
+				method := iface.Method(i)
+				methodSet[method.Name()] = true
+			}
+			
 			interfaceEntry = append(interfaceEntry, struct {
 				id        int
 				obj       types.Object
 				ifaceType *types.Interface
+				name      string
+				pkgPath   string
+				methodSet map[string]bool
 			}{
 				id:        sym.ID,
 				obj:       obj,
 				ifaceType: iface,
+				name:      typeName.Name(),
+				pkgPath:   sym.PackagePath,
+				methodSet: methodSet,
 			})
 		} else {
+			// Handle concrete types (structs and others)
+			_, isStruct := typ.Underlying().(*types.Struct)
+			
 			typeEntry = append(typeEntry, struct {
-				id  int
-				obj types.Object
-				typ types.Type
+				id        int
+				obj       types.Object
+				typ       types.Type
+				name      string
+				pkgPath   string
+				isStruct  bool
 			}{
-				id:  sym.ID,
-				obj: obj,
-				typ: typ,
+				id:       sym.ID,
+				obj:      obj,
+				typ:      typ,
+				name:     typeName.Name(),
+				pkgPath:  sym.PackagePath,
+				isStruct: isStruct,
 			})
 		}
 	}
@@ -572,6 +608,7 @@ func ExtractTypeRelations(
 					ToID:    typeSid,
 					RefType: "usage",
 				})
+				typeUsageCount++
 			} else {
 				// Possibly create an external stub
 				newID, success := getOrCreateStubForExternal(tt.Obj(), objectToSymbol, &symbols, &maxID)
@@ -581,6 +618,7 @@ func ExtractTypeRelations(
 						ToID:    newID,
 						RefType: "usage",
 					})
+					typeUsageCount++
 				}
 			}
 		case *types.Slice:
@@ -597,37 +635,63 @@ func ExtractTypeRelations(
 	}
 
 	// 1) For each interface, check which concrete types implement it
+	fmt.Printf("Checking interface implementations (%d interfaces, %d concrete types)...\n",
+		len(interfaceEntry), len(typeEntry))
+	
 	for _, ifaceE := range interfaceEntry {
 		ifaceType := ifaceE.ifaceType
+		ifaceName := ifaceE.name
+		ifacePkg := ifaceE.pkgPath
 
 		for _, conc := range typeEntry {
+			// Check if the type implements the interface directly or via pointer
 			if types.Implements(conc.typ, ifaceType) || types.Implements(types.NewPointer(conc.typ), ifaceType) {
 				r := Reference{
-					FromID:  conc.id,
-					ToID:    ifaceE.id,
+					FromID:  conc.id,     // From concrete type
+					ToID:    ifaceE.id,   // To interface
 					RefType: "implements",
 				}
 				out = append(out, r)
+				implementsCount++
+				
+				// Log the implementation relationship
+				fmt.Printf("  Detected: %s.%s implements %s.%s\n",
+					conc.pkgPath, conc.name, ifacePkg, ifaceName)
 			}
 		}
 	}
 
 	// 2) For each struct, detect embedded fields
+	fmt.Println("Checking struct embeddings...")
+	
 	for _, conc := range typeEntry {
 		under := conc.typ.Underlying()
 		st, ok := under.(*types.Struct)
 		if !ok {
 			continue
 		}
+		
+		// Check each field for embeddings
 		for i := 0; i < st.NumFields(); i++ {
 			f := st.Field(i)
 			if f.Embedded() {
 				et := f.Type()
+				
+				// Handle pointer-to-embedded type
 				if pt, ok := et.(*types.Pointer); ok {
 					et = pt.Elem()
 				}
+				
+				// Only handle named types (which can resolve to an object)
 				if named, ok := et.(*types.Named); ok {
 					embedObj := named.Obj()
+					embedName := embedObj.Name()
+					embedPkg := ""
+					if embedObj.Pkg() != nil {
+						embedPkg = embedObj.Pkg().Path()
+					}
+					
+					// Find or create the symbol ID for the embedded type
 					embedID, found := objectToSymbol[embedObj]
 					if !found {
 						newID, success := getOrCreateStubForExternal(embedObj, objectToSymbol, &symbols, &maxID)
@@ -636,24 +700,44 @@ func ExtractTypeRelations(
 						}
 						embedID = newID
 					}
+					
+					// Create the embedding relationship
 					out = append(out, Reference{
-						FromID:  conc.id,
-						ToID:    embedID,
+						FromID:  conc.id,   // From containing struct
+						ToID:    embedID,   // To embedded type
 						RefType: "embeds",
 					})
+					structEmbedCount++
+					
+					fmt.Printf("  Detected: %s.%s embeds %s.%s\n",
+						conc.pkgPath, conc.name, embedPkg, embedName)
 				}
 			}
 		}
 	}
 
 	// 3) For each interface, detect embedded interfaces
+	fmt.Println("Checking interface embeddings...")
+	
 	for _, ifaceE := range interfaceEntry {
 		ifa := ifaceE.ifaceType
+		ifaceName := ifaceE.name
+		ifacePkg := ifaceE.pkgPath
+		
+		// Check embedded interfaces
 		for i := 0; i < ifa.NumEmbeddeds(); i++ {
 			embeddedT := ifa.EmbeddedType(i)
 			if named, ok := embeddedT.(*types.Named); ok {
+				// Verify it's an interface we're embedding
 				if _, ok2 := named.Underlying().(*types.Interface); ok2 {
 					embedObj := named.Obj()
+					embedName := embedObj.Name()
+					embedPkg := ""
+					if embedObj.Pkg() != nil {
+						embedPkg = embedObj.Pkg().Path()
+					}
+					
+					// Find or create the symbol ID for the embedded interface
 					embedID, found := objectToSymbol[embedObj]
 					if !found {
 						newID, success := getOrCreateStubForExternal(embedObj, objectToSymbol, &symbols, &maxID)
@@ -662,17 +746,24 @@ func ExtractTypeRelations(
 						}
 						embedID = newID
 					}
+					
+					// Create the embedding relationship
 					out = append(out, Reference{
-						FromID:  ifaceE.id,
-						ToID:    embedID,
+						FromID:  ifaceE.id,  // From containing interface
+						ToID:    embedID,    // To embedded interface
 						RefType: "embeds",
 					})
+					ifaceEmbedCount++
+					
+					fmt.Printf("  Detected: interface %s.%s embeds interface %s.%s\n",
+						ifacePkg, ifaceName, embedPkg, embedName)
 				}
 			}
 		}
 	}
 
 	// 4) Create usage references from each field symbol to its type (if named).
+	fmt.Println("Processing field-to-type usage references...")
 	for _, sym := range symbols {
 		if sym.Kind != SymbolKindField {
 			continue
@@ -685,6 +776,7 @@ func ExtractTypeRelations(
 	}
 
 	// 5) Create usage references from each func/method to its param and return types.
+	fmt.Println("Processing function parameter and return type references...")
 	for _, sym := range symbols {
 		if sym.Kind != SymbolKindFunc && sym.Kind != SymbolKindMethod {
 			continue
@@ -709,6 +801,14 @@ func ExtractTypeRelations(
 			out = addTypeUsageRef(sym.ID, resultType, out)
 		}
 	}
+
+	// Output summary
+	fmt.Printf("\nType relations summary:\n")
+	fmt.Printf("  - Interface implementations: %d\n", implementsCount)
+	fmt.Printf("  - Struct embeddings: %d\n", structEmbedCount)
+	fmt.Printf("  - Interface embeddings: %d\n", ifaceEmbedCount)
+	fmt.Printf("  - Type usage references: %d\n", typeUsageCount)
+	fmt.Printf("  - Total type relations: %d\n", len(out))
 
 	return out
 }
