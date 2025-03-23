@@ -26,7 +26,7 @@ func TestExtractSymbols(t *testing.T) {
 		t.Fatalf("Failed to load packages for test: %v", err)
 	}
 
-	symbols, objectToSymbol, packageToSymbol := ExtractSymbols(pkgs)
+	symbols, _, objectToSymbol, packageToSymbol := ExtractSymbols(pkgs)
 	if len(symbols) == 0 {
 		t.Fatalf("Expected some symbols, got 0")
 	}
@@ -66,7 +66,7 @@ func TestExtractReferences(t *testing.T) {
 		t.Fatalf("Failed to load packages for reference test: %v", err)
 	}
 
-	symbols, objectToSymbol, packageToSymbol := ExtractSymbols(pkgs)
+	symbols, _, objectToSymbol, packageToSymbol := ExtractSymbols(pkgs)
 
 	// Use the symbols here to confirm we have at least one
 	if len(symbols) == 0 {
