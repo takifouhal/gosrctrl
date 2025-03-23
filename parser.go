@@ -77,10 +77,12 @@ func LoadPackages(path string) ([]*packages.Package, error) {
 //  3. A map from *packages.Package -> Symbol.ID for the package-level symbol
 func ExtractSymbols(pkgs []*packages.Package) (
 	[]Symbol,
+	[]Reference,
 	map[types.Object]int,
 	map[*packages.Package]int,
 ) {
 	var symbols []Symbol
+	var importRefs []Reference
 	objectToSymbol := make(map[types.Object]int)
 	packageToSymbol := make(map[*packages.Package]int)
 
@@ -136,8 +138,24 @@ func ExtractSymbols(pkgs []*packages.Package) (
 				Column:      pos.Column,
 				Receiver:    receiver,
 			}
-			symbols = append(symbols, symbol)
 
+			// Special case for imports (types.PkgName)
+			if pkgNameObj, ok := obj.(*types.PkgName); ok {
+				symbol.PackagePath = pkgNameObj.Imported().Path()
+				symbol.Name = pkgNameObj.Imported().Path()
+
+				// Create an import reference from the current package to this imported package
+				importRefs = append(importRefs, Reference{
+					FromID: packageToSymbol[pkg],
+					ToID:   currentID,
+					File:   pos.Filename,
+					Line:   pos.Line,
+					Column: pos.Column,
+					RefType: "import",
+				})
+			}
+
+			symbols = append(symbols, symbol)
 			objectToSymbol[obj] = currentID
 		}
 	}
@@ -174,7 +192,7 @@ func ExtractSymbols(pkgs []*packages.Package) (
 		}
 	}
 
-	return symbols, objectToSymbol, packageToSymbol
+	return symbols, importRefs, objectToSymbol, packageToSymbol
 }
 
 // classifyObject inspects a types.Object to determine its symbol kind.

@@ -170,19 +170,30 @@ def main():
         from_numbat_id = symbol_id_map.get(from_id)
         to_numbat_id = symbol_id_map.get(to_id)
         if from_numbat_id is not None and to_numbat_id is not None:
+            # Skip function->package usage references
+            from_sym = next((s for s in symbols if s["ID"] == from_id), None)
+            to_sym = next((s for s in symbols if s["ID"] == to_id), None)
+            if (ref_type in ("usage", "call")
+                and from_sym and to_sym
+                and from_sym["Kind"] in ("func","method")
+                and to_sym["Kind"] == "package"):
+                continue
+
             if ref_type == "call":
                 db.record_ref_call(from_numbat_id, to_numbat_id)
             elif ref_type == "implements":
                 db.record_ref_inheritance(from_numbat_id, to_numbat_id)
+            elif ref_type == "import":
+                db.record_ref_import(from_numbat_id, to_numbat_id)
             elif ref_type == "embeds":
                 db.record_ref_inheritance(from_numbat_id, to_numbat_id)
             else:
                 db.record_ref_usage(from_numbat_id, to_numbat_id)
-        # Optionally, we could record usage locations here, but we'll skip for simplicity
 
     db.commit()
     db.close()
 
+    print(f"✅ Successfully created Sourcetrail DB at: {output_path}")
     print(f"✅ Successfully created Sourcetrail DB at: {output_path}")
 
 if __name__ == '__main__':

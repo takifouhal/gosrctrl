@@ -61,7 +61,7 @@ func main() {
 	}
 
 	// Extract symbols (definitions) and build object->symbol map + package->symbol map
-	symbols, objectToSymbol, packageToSymbol := ExtractSymbols(pkgs)
+	symbols, importRefs, objectToSymbol, packageToSymbol := ExtractSymbols(pkgs)
 
 	fmt.Printf("\nParsed %d package(s)\n", len(pkgs))
 	fmt.Printf("Extracted %d symbol(s):\n", len(symbols))
@@ -72,6 +72,7 @@ func main() {
 
 	// Extract references (usages) among the symbols
 	references := ExtractReferences(pkgs, objectToSymbol, packageToSymbol)
+	references = append(references, importRefs...)
 
 	fmt.Printf("\nExtracted %d reference(s):\n", len(references))
 	for _, r := range references {
