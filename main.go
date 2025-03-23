@@ -63,4 +63,14 @@ func main() {
 	}
 
 	fmt.Println("\n(Parsing logic to be further developed in future tasks.)")
+
+	// Extract symbol definitions from the parsed packages
+	symbols := ExtractSymbols(pkgs)
+
+	// Debug output: print extracted symbols
+	fmt.Printf("\nExtracted %d symbol(s):\n", len(symbols))
+	for _, s := range symbols {
+		fmt.Printf("- ID: %d, Kind: %s, Name: %s, Receiver: %s, File: %s, Line: %d, Col: %d\n",
+			s.ID, s.Kind, s.Name, s.Receiver, s.File, s.Line, s.Column)
+	}
 }
