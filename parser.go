@@ -71,9 +71,9 @@ func LoadPackages(path string) ([]*packages.Package, error) {
 // ExtractSymbols traverses the provided Go packages and collects symbol definitions
 // (functions, methods, types, variables, constants, etc.).
 // Returns:
-//   1) The slice of symbols
-//   2) A map from types.Object -> Symbol.ID for quick lookup of definitions
-//   3) A map from *packages.Package -> Symbol.ID for the package-level symbol
+//  1. The slice of symbols
+//  2. A map from types.Object -> Symbol.ID for quick lookup of definitions
+//  3. A map from *packages.Package -> Symbol.ID for the package-level symbol
 func ExtractSymbols(pkgs []*packages.Package) (
 	[]Symbol,
 	map[types.Object]int,
@@ -167,10 +167,10 @@ func classifyObject(obj types.Object) SymbolKind {
 }
 
 // ExtractReferences finds usage relationships between symbols.
-// 1) For each identifier in pkg.TypesInfo.Uses, if it's mapped to a known symbol (toID),
-// 2) Determine the "from" symbol ID by discovering if that usage is inside a particular function.
-//    If none is found, we use the package-level symbol ID.
-// 3) Create a Reference with fromID, toID, and usage location.
+//  1. For each identifier in pkg.TypesInfo.Uses, if it's mapped to a known symbol (toID),
+//  2. Determine the "from" symbol ID by discovering if that usage is inside a particular function.
+//     If none is found, we use the package-level symbol ID.
+//  3. Create a Reference with fromID, toID, and usage location.
 func ExtractReferences(
 	pkgs []*packages.Package,
 	objectToSymbol map[types.Object]int,
@@ -179,6 +179,25 @@ func ExtractReferences(
 	var references []Reference
 
 	for _, pkg := range pkgs {
+		// Build a map of positions that correspond to a call expression
+		callPositions := map[token.Pos]bool{}
+		for _, f := range pkg.Syntax {
+			if f == nil {
+				continue
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				if c, ok := n.(*ast.CallExpr); ok {
+					switch fn := c.Fun.(type) {
+					case *ast.Ident:
+						callPositions[fn.Pos()] = true
+					case *ast.SelectorExpr:
+						callPositions[fn.Sel.Pos()] = true
+					}
+				}
+				return true
+			})
+		}
+
 		// The package-level symbol ID for references at the top level
 		pkgSymbolID := packageToSymbol[pkg]
 
@@ -214,6 +233,12 @@ func ExtractReferences(
 				}
 			}
 
+			// Decide reference type
+			refType := "usage"
+			if callPositions[id.Pos()] {
+				refType = "call"
+			}
+
 			// Build the reference
 			r := Reference{
 				FromID:  fromID,
@@ -221,7 +246,7 @@ func ExtractReferences(
 				File:    pos.Filename,
 				Line:    pos.Line,
 				Column:  pos.Column,
-				RefType: "usage",
+				RefType: refType,
 			}
 			references = append(references, r)
 		}

@@ -149,10 +149,14 @@ def main():
     for ref in references:
         from_id = ref["FromID"]
         to_id = ref["ToID"]
+        ref_type = ref.get("RefType", "usage")
         from_numbat_id = symbol_id_map.get(from_id)
         to_numbat_id = symbol_id_map.get(to_id)
         if from_numbat_id is not None and to_numbat_id is not None:
-            db.record_ref_usage(from_numbat_id, to_numbat_id)
+            if ref_type == "call":
+                db.record_ref_call(from_numbat_id, to_numbat_id)
+            else:
+                db.record_ref_usage(from_numbat_id, to_numbat_id)
         # Optionally, we could record usage locations here, but we'll skip for simplicity
 
     db.commit()
