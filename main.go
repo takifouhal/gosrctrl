@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -11,9 +12,11 @@ import (
 func main() {
 	var pathArg string
 	var outArg string
+	var keepJSON bool
 
 	flag.StringVar(&pathArg, "path", ".", "Path to the Go project (default: current directory)")
 	flag.StringVar(&outArg, "out", "output.srctrldb", "Output file for Sourcetrail DB (default: output.srctrldb)")
+	flag.BoolVar(&keepJSON, "keepjson", false, "Keep intermediate JSON file (default: false)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(),
@@ -80,18 +83,44 @@ func main() {
 	fmt.Println("(Parsing logic to be further developed in future tasks.)")
 
 	// --------------------------------------------------
-	// Export symbols and references to JSON
-	// If the outArg ends with .srctrldb, produce a .json file instead
-	jsonOutput := outArg
+	// Integration: end-to-end parse + index
+	// Decide on final .srctrldb name
+	var dbOutput string
 	if filepath.Ext(outArg) == ".srctrldb" {
-		jsonOutput = strings.TrimSuffix(outArg, ".srctrldb") + ".json"
+		dbOutput = outArg
+	} else {
+		dbOutput = outArg + ".srctrldb"
 	}
+
+	// Produce a JSON filename
+	// If user specifically used .srctrldb as outArg, we produce a separate JSON with same base name
+	jsonOutput := strings.TrimSuffix(dbOutput, ".srctrldb") + ".json"
 
 	if err := ExportToJSON(jsonOutput, symbols, references); err != nil {
 		fmt.Fprintf(os.Stderr, "Error exporting to JSON: %v\n", err)
 		os.Exit(1)
 	}
-
 	fmt.Printf("\nJSON export written to %s\n", jsonOutput)
+
+	// Next: call Python script to generate the .srctrldb
+	generateDBCmd := exec.Command("python3", "generate_db.py", "-i", jsonOutput, "-o", dbOutput)
+	generateDBCmd.Stdout = os.Stdout
+	generateDBCmd.Stderr = os.Stderr
+
+	fmt.Printf("\nGenerating Sourcetrail DB using %s...\n", generateDBCmd.String())
+	if err := generateDBCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error generating Sourcetrail DB: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Sourcetrail DB created at: %s\n", dbOutput)
+
+	// Optional: remove JSON after success
+	if !keepJSON {
+		if err := os.Remove(jsonOutput); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: couldn't remove intermediate JSON file: %v\n", err)
+		}
+	}
+
 	fmt.Println("Done.")
 }
