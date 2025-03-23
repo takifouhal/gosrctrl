@@ -181,16 +181,24 @@ def main():
             pkg_parent_id = get_or_create_package_namespace(package_path, module_map, db, package_map)
 
         # Decide how to record the symbol
+        # Decide how to record the symbol
         indexed = not sym.get("External", False)
+
+        # If ParentID is provided, try that first.
+        parent_id = pkg_parent_id
+        stored_parent_id = sym.get("ParentID", 0)
+        if stored_parent_id != 0:
+            mapped_parent_id = symbol_id_map.get(stored_parent_id)
+            if mapped_parent_id is not None:
+                parent_id = mapped_parent_id
 
         if sym_kind == "package":
             # Just map the package itself to the namespace
-            # (We already created it above, so record that as the symbol ID.)
             recorded_id = pkg_parent_id
         elif sym_kind == "struct":
             recorded_id = db.record_struct(
                 name=sym_name,
-                parent_id=pkg_parent_id,
+                parent_id=parent_id,
                 is_indexed=indexed
             )
         elif sym_kind == "interface":

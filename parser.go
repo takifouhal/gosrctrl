@@ -37,6 +37,8 @@ type Symbol struct {
 	Receiver    string     // Receiver type (for methods)
 	Sig         string     // Signature or definition snippet (for funcs, interfaces, etc.)
 	External    bool       // Marks stub symbols for external code
+
+	ParentID    int        // Optional parent symbol ID (e.g., for field->struct)
 }
 
 // Reference captures a usage relationship between two symbols.
@@ -212,7 +214,8 @@ func ExtractSymbols(pkgs []*packages.Package) (
 				if st, ok := under.(*types.Struct); ok {
 					// Mark this symbol as a struct
 					symbols[symbolIndexMap[s.ID]].Kind = SymbolKindStruct
-					// Now record the embedded fields as before
+
+					// Now ensure all fields (including embedded) have Symbol entries
 					for i := 0; i < st.NumFields(); i++ {
 						fieldObj := st.Field(i)
 						if fieldID, found := objectToSymbol[fieldObj]; found {
@@ -220,6 +223,25 @@ func ExtractSymbols(pkgs []*packages.Package) (
 							symbols[fieldIdx].Kind = SymbolKindField
 							// Reuse 'Receiver' to store the struct's full type string
 							symbols[fieldIdx].Receiver = typeName.Type().String()
+							// Also set ParentID to the struct's ID
+							symbols[fieldIdx].ParentID = s.ID
+						} else {
+							// Create a new symbol for an embedded or otherwise missing field
+							currentID++
+							newField := Symbol{
+								ID:          currentID,
+								Name:        fieldObj.Name(),
+								Kind:        SymbolKindField,
+								PackagePath: s.PackagePath,
+								File:        "",
+								Line:        0,
+								Column:      0,
+								Receiver:    typeName.Type().String(),
+								ParentID:    s.ID,
+							}
+							symbols = append(symbols, newField)
+							objectToSymbol[fieldObj] = currentID
+							symbolIndexMap[currentID] = len(symbols) - 1
 						}
 					}
 				} else if iface, ok := under.(*types.Interface); ok {
