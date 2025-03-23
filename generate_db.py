@@ -208,8 +208,15 @@ def main():
             )
 
         elif sym_kind == "field":
-            # If we have a "receiver_str", try to locate the parent type
-            if stored_parent_id == 0 and receiver_str:
+            # First, check if we have a valid ParentID from the parser
+            if stored_parent_id != 0:
+                mapped_parent_id = symbol_id_map.get(stored_parent_id)
+                if mapped_parent_id is not None:
+                    parent_id = mapped_parent_id
+                else:
+                    parent_id = pkg_parent_id
+            elif receiver_str:
+                # If no explicit ParentID, attempt to locate parent type via receiver
                 raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
                 potential_type_name = raw_receiver.split(".")[-1]
                 parent_found = None
@@ -226,6 +233,9 @@ def main():
                 if parent_found is None:
                     parent_found = pkg_parent_id
                 parent_id = parent_found
+            else:
+                # Fallback to the package-level parent
+                parent_id = pkg_parent_id
 
             recorded_id = db.record_field(
                 name=sym_name,
