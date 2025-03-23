@@ -74,7 +74,7 @@ func main() {
 	}
 
 	// Extract references (usages) among the symbols
-	references := ExtractReferences(pkgs, objectToSymbol, packageToSymbol)
+	references := ExtractReferences(pkgs, symbols, objectToSymbol, packageToSymbol)
 	references = append(references, importRefs...)
 
 	fmt.Printf("\nExtracted %d reference(s):\n", len(references))

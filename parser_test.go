@@ -73,7 +73,7 @@ func TestExtractReferences(t *testing.T) {
 		t.Fatalf("Expected some symbols, got 0")
 	}
 
-	refs := ExtractReferences(pkgs, objectToSymbol, packageToSymbol)
+	refs := ExtractReferences(pkgs, symbols, objectToSymbol, packageToSymbol)
 	if len(refs) == 0 {
 		t.Logf("No references found in sample code. This may be okay if references are external.")
 	}

@@ -35,6 +35,7 @@ type Symbol struct {
 	Column      int        // Column number in the file
 	Receiver    string     // Receiver type (for methods)
 	Sig         string     // Signature or definition snippet (for funcs, interfaces, etc.)
+	External    bool       // Marks stub symbols for external code
 }
 
 // Reference captures a usage relationship between two symbols.
@@ -323,10 +324,19 @@ func classifyObject(obj types.Object) SymbolKind {
 //  3. Create a Reference with fromID, toID, and usage location.
 func ExtractReferences(
 	pkgs []*packages.Package,
+	symbols []Symbol,
 	objectToSymbol map[types.Object]int,
 	packageToSymbol map[*packages.Package]int,
 ) []Reference {
 	var references []Reference
+
+	// Track the maximum symbol ID used so far (for assigning new IDs to external stubs)
+	var maxID int
+	for _, sid := range objectToSymbol {
+		if sid > maxID {
+			maxID = sid
+		}
+	}
 
 	for _, pkg := range pkgs {
 		// Build a map of positions that correspond to a call expression
@@ -379,8 +389,38 @@ func ExtractReferences(
 		for id, obj := range pkg.TypesInfo.Uses {
 			toID, ok := objectToSymbol[obj]
 			if !ok {
-				// Usage is referencing an external or unknown symbol; skip it
-				continue
+				// Attempt to create external stub if this is from an imported package
+				objPkg := obj.Pkg()
+				if objPkg != nil {
+					pkgSymID, hasPkg := findPackageSymbolID(symbols, objPkg.Path())
+					if hasPkg {
+						maxID++
+						stubKind := classifyObject(obj)
+						sym := Symbol{
+							ID:          maxID,
+							Name:        obj.Name(),
+							Kind:        stubKind,
+							PackagePath: objPkg.Path(),
+							External:    true,
+						}
+						symbols = append(symbols, sym)
+						objectToSymbol[obj] = maxID
+						toID = maxID
+
+						// Also add an implicit reference from package to this symbol
+						references = append(references, Reference{
+							FromID:  pkgSymID,
+							ToID:    maxID,
+							RefType: "contains",
+						})
+					} else {
+						// If we can't link it to a known package, skip
+						continue
+					}
+				} else {
+					// No package info
+					continue
+				}
 			}
 			pos := pkg.Fset.Position(id.Pos())
 			if !pos.IsValid() {
@@ -398,12 +438,12 @@ func ExtractReferences(
 			}
 
 			// Decide reference type
-				refType := "usage"
-				if callPositions[id.Pos()] {
-					refType = "call"
-				} else if writePositions[id.Pos()] {
-					refType = "write"
-				}
+			refType := "usage"
+			if callPositions[id.Pos()] {
+				refType = "call"
+			} else if writePositions[id.Pos()] {
+				refType = "write"
+			}
 
 			// Build the reference
 			r := Reference{
@@ -419,6 +459,15 @@ func ExtractReferences(
 	}
 
 	return references
+}
+
+func findPackageSymbolID(symbols []Symbol, pkgPath string) (int, bool) {
+	for _, s := range symbols {
+		if s.Kind == SymbolKindPackage && s.PackagePath == pkgPath {
+			return s.ID, true
+		}
+	}
+	return 0, false
 }
 
 // ExtractTypeRelations detects:

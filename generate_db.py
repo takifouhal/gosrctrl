@@ -181,6 +181,8 @@ def main():
             pkg_parent_id = get_or_create_package_namespace(package_path, module_map, db, package_map)
 
         # Decide how to record the symbol
+        indexed = not sym.get("External", False)
+
         if sym_kind == "package":
             # Just map the package itself to the namespace
             # (We already created it above, so record that as the symbol ID.)
@@ -189,13 +191,15 @@ def main():
             recorded_id = db.record_class(
                 name=sym_name,
                 parent_id=pkg_parent_id,
-                postfix="(interface)"
+                postfix="(interface)",
+                is_indexed=indexed
             )
         elif sym_kind == "type":
             # A user-defined non-interface type
             recorded_id = db.record_class(
                 name=sym_name,
-                parent_id=pkg_parent_id
+                parent_id=pkg_parent_id,
+                is_indexed=indexed
             )
         elif sym_kind == "field":
             if receiver_str:
@@ -210,11 +214,23 @@ def main():
                         break
                 if parent_id is None:
                     parent_id = pkg_parent_id
-                recorded_id = db.record_field(name=sym_name, parent_id=parent_id)
+                recorded_id = db.record_field(
+                    name=sym_name,
+                    parent_id=parent_id,
+                    is_indexed=indexed
+                )
             else:
-                recorded_id = db.record_field(name=sym_name, parent_id=pkg_parent_id)
+                recorded_id = db.record_field(
+                    name=sym_name,
+                    parent_id=pkg_parent_id,
+                    is_indexed=indexed
+                )
         elif sym_kind in ("var", "const"):
-            recorded_id = db.record_global_variable(name=sym_name, parent_id=pkg_parent_id)
+            recorded_id = db.record_global_variable(
+                name=sym_name,
+                parent_id=pkg_parent_id,
+                is_indexed=indexed
+            )
         elif sym_kind in ("func", "method"):
             if receiver_str:
                 raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
@@ -228,12 +244,24 @@ def main():
                         break
                 if parent_id is None:
                     parent_id = pkg_parent_id
-                recorded_id = db.record_method(name=sym_name, parent_id=parent_id)
+                recorded_id = db.record_method(
+                    name=sym_name,
+                    parent_id=parent_id,
+                    is_indexed=indexed
+                )
             else:
-                recorded_id = db.record_function(name=sym_name, parent_id=pkg_parent_id)
+                recorded_id = db.record_function(
+                    name=sym_name,
+                    parent_id=pkg_parent_id,
+                    is_indexed=indexed
+                )
         else:
             # Fallback: just record as a field
-            recorded_id = db.record_field(name=sym_name, parent_id=pkg_parent_id)
+            recorded_id = db.record_field(
+                name=sym_name,
+                parent_id=pkg_parent_id,
+                is_indexed=indexed
+            )
 
         symbol_id_map[sym_id] = recorded_id
 
