@@ -56,21 +56,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	// For simple verification, print basic info about the loaded packages
-	fmt.Printf("\nParsed %d package(s):\n", len(pkgs))
-	for _, pkg := range pkgs {
-		fmt.Printf("- Package: %s, Files: %d\n", pkg.Name, len(pkg.GoFiles))
-	}
+	// Extract symbols (definitions) and build object->symbol map + package->symbol map
+	symbols, objectToSymbol, packageToSymbol := ExtractSymbols(pkgs)
 
-	fmt.Println("\n(Parsing logic to be further developed in future tasks.)")
-
-	// Extract symbol definitions from the parsed packages
-	symbols := ExtractSymbols(pkgs)
-
-	// Debug output: print extracted symbols
-	fmt.Printf("\nExtracted %d symbol(s):\n", len(symbols))
+	fmt.Printf("\nParsed %d package(s)\n", len(pkgs))
+	fmt.Printf("Extracted %d symbol(s):\n", len(symbols))
 	for _, s := range symbols {
 		fmt.Printf("- ID: %d, Kind: %s, Name: %s, Receiver: %s, File: %s, Line: %d, Col: %d\n",
 			s.ID, s.Kind, s.Name, s.Receiver, s.File, s.Line, s.Column)
 	}
+
+	// Extract references (usages) among the symbols
+	references := ExtractReferences(pkgs, objectToSymbol, packageToSymbol)
+
+	fmt.Printf("\nExtracted %d reference(s):\n", len(references))
+	for _, r := range references {
+		fmt.Printf("- from: %d to: %d, file: %s, line: %d, col: %d, type: %s\n",
+			r.FromID, r.ToID, r.File, r.Line, r.Column, r.RefType)
+	}
+
+	fmt.Println("\n(References extraction logic can be refined to distinguish calls, reads, etc.)")
+	fmt.Println("\n(Parsing logic to be further developed in future tasks.)")
 }
