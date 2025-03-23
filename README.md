@@ -13,7 +13,6 @@ GoSrcCtrl parses Go source code and generates output that can be imported into S
 
 - Go 1.18+ 
 - Python 3.8+
-- Numbat (`pip3 install numbat`)
 
 ## Setup
 
@@ -24,12 +23,30 @@ git clone <repository-url>
 cd gosrctrl
 ```
 
-2. Ensure dependencies are installed:
+2. Set up Go dependencies:
 
 ```
 go get golang.org/x/tools/go/packages
-pip3 install numbat
 ```
+
+3. Set up Python virtual environment:
+
+```
+# Create and activate virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows, use: venv\Scripts\activate
+
+# Install required Python packages
+pip install -r requirements.txt
+```
+
+## VSCode Integration
+
+The project includes VSCode settings that will automatically use the virtual environment. After opening the project in VSCode:
+
+1. Open any Python file
+2. VSCode should prompt to select the Python interpreter - choose the one from the venv directory
+3. VSCode will now use the virtual environment for running and debugging Python code
 
 ## Usage
 
@@ -46,6 +63,9 @@ go run main.go -src /path/to/go/project -out output.json
 2. Process the output and create a Sourcetrail database:
 
 ```
+# Make sure the virtual environment is activated
+source venv/bin/activate  # On Windows, use: venv\Scripts\activate
+
 python3 indexer.py -i output.json -o output.srctrldb
 ```
 
