@@ -38,7 +38,7 @@ type Symbol struct {
 	Sig         string     // Signature or definition snippet (for funcs, interfaces, etc.)
 	External    bool       // Marks stub symbols for external code
 
-	ParentID    int        // Optional parent symbol ID (e.g., for field->struct)
+	ParentID int // Optional parent symbol ID (e.g., for field->struct)
 }
 
 // Reference captures a usage relationship between two symbols.
@@ -48,7 +48,7 @@ type Reference struct {
 	File    string // Source file where the usage occurs
 	Line    int    // Line number of the usage
 	Column  int    // Column number of the usage
-	RefType string // e.g. "usage" (could be extended to "call", etc.)
+	RefType string // e.g. "usage" or "call", "implements", "embeds", etc.
 }
 
 // LoadPackages loads and parses all Go packages beneath the specified path.
@@ -74,6 +74,56 @@ func LoadPackages(path string) ([]*packages.Package, error) {
 	}
 
 	return pkgs, nil
+}
+
+// getOrCreateStubForExternal ensures we have a Symbol ID for the given object,
+// creating an external symbol stub if it doesn't exist. Returns the symbol ID
+// and a boolean indicating success. If the object cannot be resolved to a package,
+// returns -1, false.
+func getOrCreateStubForExternal(
+	obj types.Object,
+	objectToSymbol map[types.Object]int,
+	symbols *[]Symbol,
+	maxID *int,
+) (int, bool) {
+
+	if existingID, found := objectToSymbol[obj]; found {
+		return existingID, true
+	}
+
+	objPkg := obj.Pkg()
+	if objPkg == nil {
+		// If we can’t determine a package, we can’t create a meaningful stub.
+		return -1, false
+	}
+
+	// Bump ID for the new symbol
+	*maxID++
+	stubKind := classifyObject(obj)
+
+	// Adjust if the object is a named type that’s actually struct or interface
+	if stubKind == SymbolKindType {
+		if named, okType := obj.Type().(*types.Named); okType {
+			if _, isIface := named.Underlying().(*types.Interface); isIface {
+				stubKind = SymbolKindInterface
+			} else if _, isStruct := named.Underlying().(*types.Struct); isStruct {
+				stubKind = SymbolKindStruct
+			}
+		}
+	}
+
+	stubSym := Symbol{
+		ID:          *maxID,
+		Name:        obj.Name(),
+		Kind:        stubKind,
+		PackagePath: objPkg.Path(),
+		External:    true,
+	}
+
+	*symbols = append(*symbols, stubSym)
+	objectToSymbol[obj] = *maxID
+
+	return *maxID, true
 }
 
 // ExtractSymbols traverses the provided Go packages and collects symbol definitions
@@ -142,10 +192,8 @@ func ExtractSymbols(pkgs []*packages.Package) (
 			// If it's a function, check if there's a receiver (making it a method)
 			if fn, ok := obj.(*types.Func); ok {
 				sig, _ := fn.Type().(*types.Signature)
-				if sig != nil {
-					if sig.Recv() != nil {
-						receiver = sig.Recv().Type().String()
-					}
+				if sig != nil && sig.Recv() != nil {
+					receiver = sig.Recv().Type().String()
 				}
 			}
 
@@ -193,8 +241,6 @@ func ExtractSymbols(pkgs []*packages.Package) (
 	}
 
 	// Identify struct fields after collecting all symbols.
-	// We'll map ID -> Object so we can discover the actual *types.TypeName objects, then
-	// detect any underlying *types.Struct and mark its fields as "field".
 	idToObject := make(map[int]types.Object)
 	for obj, sid := range objectToSymbol {
 		idToObject[sid] = obj
@@ -258,8 +304,6 @@ func ExtractSymbols(pkgs []*packages.Package) (
 
 // buildFuncSignature creates a hover text like: func (Receiver) Name(param1 Type1, param2 Type2) (ret Type)
 func buildFuncSignature(fn *types.Func, sig *types.Signature) string {
-	// We'll manually construct a string for readability
-	// e.g. "func (r *Receiver) MyMethod(a int, b string) (bool, error)"
 	recv := ""
 	if sig.Recv() != nil {
 		recvType := sig.Recv().Type().String()
@@ -277,7 +321,6 @@ func buildFuncSignature(fn *types.Func, sig *types.Signature) string {
 
 	results := ""
 	if sig.Results().Len() > 0 {
-		// If there's more than one result, we wrap them in parentheses
 		if sig.Results().Len() == 1 {
 			r := sig.Results().At(0)
 			results = r.Type().String()
@@ -301,7 +344,6 @@ func buildFuncSignature(fn *types.Func, sig *types.Signature) string {
 // buildInterfaceSignature creates a short snippet for an interface symbol
 // e.g. "type MyInterface interface { Method1(...) ... }"
 func buildInterfaceSignature(typeName *types.TypeName, iface *types.Interface) string {
-	// We'll gather the interface methods:
 	var sb strings.Builder
 	sb.WriteString("type ")
 	sb.WriteString(typeName.Name())
@@ -310,8 +352,9 @@ func buildInterfaceSignature(typeName *types.TypeName, iface *types.Interface) s
 		m := iface.Method(i)
 		sig, _ := m.Type().(*types.Signature)
 		if sig != nil {
+			// buildFuncSignature includes "func " prefix, which we don't need in an interface block
 			sb.WriteString("    ")
-			sb.WriteString(buildFuncSignature(m, sig)[5:]) // strip off the "func "
+			sb.WriteString(buildFuncSignature(m, sig)[5:]) // strip off "func "
 			sb.WriteString("\n")
 		}
 	}
@@ -343,6 +386,7 @@ func classifyObject(obj types.Object) SymbolKind {
 
 // ExtractReferences finds usage relationships between symbols.
 //  1. For each identifier in pkg.TypesInfo.Uses, if it's mapped to a known symbol (toID),
+//     otherwise attempt to create an external stub symbol if from an external package.
 //  2. Determine the "from" symbol ID by discovering if that usage is inside a particular function.
 //     If none is found, we use the package-level symbol ID.
 //  3. Create a Reference with fromID, toID, and usage location.
@@ -352,20 +396,14 @@ func ExtractReferences(
 	objectToSymbol map[types.Object]int,
 	packageToSymbol map[*packages.Package]int,
 ) []Reference {
+
 	var references []Reference
 
-	// Track the maximum symbol ID used so far (for assigning new IDs to external stubs)
-	var maxID int
-	for _, sid := range objectToSymbol {
-		if sid > maxID {
-			maxID = sid
-		}
-	}
+	maxID := getMaxSymbolID(objectToSymbol)
 
+	// For each package, gather call and write positions by traversing AST
 	for _, pkg := range pkgs {
-		// Build a map of positions that correspond to a call expression
 		callPositions := map[token.Pos]bool{}
-		// Build a map of positions that correspond to left-hand side of assignments ("writes")
 		writePositions := map[token.Pos]bool{}
 
 		for _, f := range pkg.Syntax {
@@ -391,15 +429,11 @@ func ExtractReferences(
 						}
 					}
 				}
-
 				return true
 			})
 		}
 
-		// The package-level symbol ID for references at the top level
 		pkgSymbolID := packageToSymbol[pkg]
-
-		// Build a map of filename -> *ast.File
 		fileMap := make(map[string]*ast.File)
 		for _, f := range pkg.Syntax {
 			if f == nil {
@@ -409,54 +443,23 @@ func ExtractReferences(
 			fileMap[fileName] = f
 		}
 
-		// For each usage identified in pkg.TypesInfo.Uses
 		for id, obj := range pkg.TypesInfo.Uses {
 			toID, ok := objectToSymbol[obj]
 			if !ok {
-				// Attempt to create external stub if this is from an imported package
-				objPkg := obj.Pkg()
-				if objPkg != nil {
-					_, hasPkg := findPackageSymbolID(symbols, objPkg.Path())
-					if hasPkg {
-						maxID++
-						stubKind := classifyObject(obj)
-
-						// Check if it is actually an interface or struct
-						if stubKind == SymbolKindType {
-							if named, okType := obj.Type().(*types.Named); okType {
-								if _, isIface := named.Underlying().(*types.Interface); isIface {
-									stubKind = SymbolKindInterface
-								} else if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-									stubKind = SymbolKindStruct
-								}
-							}
-						}
-
-						sym := Symbol{
-							ID:          maxID,
-							Name:        obj.Name(),
-							Kind:        stubKind,
-							PackagePath: objPkg.Path(),
-							External:    true,
-						}
-						symbols = append(symbols, sym)
-						objectToSymbol[obj] = maxID
-						toID = maxID
-					} else {
-						// If we can't link it to a known package, skip
-						continue
-					}
-				} else {
-					// No package info
+				// Attempt to create external stub symbol if object from external package
+				newID, success := getOrCreateStubForExternal(obj, objectToSymbol, &symbols, &maxID)
+				if !success {
+					// If we can't create an external stub, skip
 					continue
 				}
+				toID = newID
 			}
 			pos := pkg.Fset.Position(id.Pos())
 			if !pos.IsValid() {
 				continue
 			}
 
-			// Determine fromID
+			// fromID defaults to the package-level ID
 			fromID := pkgSymbolID
 			fileAst := fileMap[pos.Filename]
 			if fileAst != nil {
@@ -466,7 +469,6 @@ func ExtractReferences(
 				}
 			}
 
-			// Decide reference type
 			refType := "usage"
 			if callPositions[id.Pos()] {
 				refType = "call"
@@ -474,7 +476,6 @@ func ExtractReferences(
 				refType = "write"
 			}
 
-			// Build the reference
 			r := Reference{
 				FromID:  fromID,
 				ToID:    toID,
@@ -490,20 +491,13 @@ func ExtractReferences(
 	return references
 }
 
-func findPackageSymbolID(symbols []Symbol, pkgPath string) (int, bool) {
-	for _, s := range symbols {
-		if s.Kind == SymbolKindPackage && s.PackagePath == pkgPath {
-			return s.ID, true
-		}
-	}
-	return 0, false
-}
-
 // ExtractTypeRelations detects:
 // 1) "struct X implements interface Y"
 // 2) "struct A embeds struct B"
-//
-// It returns references with RefType = "implements" or "embeds".
+// 3) "interface A embeds interface B"
+// 4) field->type usage references
+// 5) func->param/return type usage references
+// Returns references with RefType = "implements" or "embeds" or "usage".
 func ExtractTypeRelations(
 	pkgs []*packages.Package,
 	symbols []Symbol,
@@ -511,8 +505,61 @@ func ExtractTypeRelations(
 	packageToSymbol map[*packages.Package]int,
 ) []Reference {
 
-	// addTypeUsageRef is a local helper that, given a fromSymbol ID and a Go type,
-	// appends a "usage" reference to 'out' if the type is a named type we know about.
+	var out []Reference
+
+	maxID := getMaxSymbolID(objectToSymbol)
+
+	idToObject := make(map[int]types.Object, len(objectToSymbol))
+	for obj, sid := range objectToSymbol {
+		idToObject[sid] = obj
+	}
+
+	// We'll gather interface and type entries
+	typeEntry := []struct {
+		id  int
+		obj types.Object
+		typ types.Type
+	}{}
+	interfaceEntry := []struct {
+		id        int
+		obj       types.Object
+		ifaceType *types.Interface
+	}{}
+
+	for _, sym := range symbols {
+		if sym.Kind != SymbolKindType && sym.Kind != SymbolKindInterface {
+			continue
+		}
+		obj := idToObject[sym.ID]
+		typeName, _ := obj.(*types.TypeName)
+		if typeName == nil {
+			continue
+		}
+		typ := typeName.Type()
+		if iface, ok := typ.Underlying().(*types.Interface); ok {
+			interfaceEntry = append(interfaceEntry, struct {
+				id        int
+				obj       types.Object
+				ifaceType *types.Interface
+			}{
+				id:        sym.ID,
+				obj:       obj,
+				ifaceType: iface,
+			})
+		} else {
+			typeEntry = append(typeEntry, struct {
+				id  int
+				obj types.Object
+				typ types.Type
+			}{
+				id:  sym.ID,
+				obj: obj,
+				typ: typ,
+			})
+		}
+	}
+
+	// Helper for recording "usage" references from a symbol to named types
 	var addTypeUsageRef func(fromSid int, t types.Type, out []Reference) []Reference
 	addTypeUsageRef = func(fromSid int, t types.Type, out []Reference) []Reference {
 		switch tt := t.(type) {
@@ -525,6 +572,16 @@ func ExtractTypeRelations(
 					ToID:    typeSid,
 					RefType: "usage",
 				})
+			} else {
+				// Possibly create an external stub
+				newID, success := getOrCreateStubForExternal(tt.Obj(), objectToSymbol, &symbols, &maxID)
+				if success {
+					out = append(out, Reference{
+						FromID:  fromSid,
+						ToID:    newID,
+						RefType: "usage",
+					})
+				}
 			}
 		case *types.Slice:
 			return addTypeUsageRef(fromSid, tt.Elem(), out)
@@ -539,78 +596,11 @@ func ExtractTypeRelations(
 		return out
 	}
 
-	var out []Reference
-
-	var maxID int
-	for _, sid := range objectToSymbol {
-		if sid > maxID {
-			maxID = sid
-		}
-	}
-
-	// Step 1: Build a list of all (struct, structID, types.Type) and (interface, interfaceID, *types.Interface)
-	typeEntry := []struct {
-		id  int
-		obj types.Object
-		typ types.Type
-	}{}
-	interfaceEntry := []struct {
-		id        int
-		obj       types.Object
-		ifaceType *types.Interface
-	}{}
-
-	// We already have an idToObject map internally, let's build it again or on the fly:
-	idToObject := make(map[int]types.Object, len(objectToSymbol))
-	for obj, sid := range objectToSymbol {
-		idToObject[sid] = obj
-	}
-
-	// Identify interface vs struct from the known symbols
-	for _, sym := range symbols {
-		if sym.Kind != SymbolKindType && sym.Kind != SymbolKindInterface {
-			continue
-		}
-		obj := idToObject[sym.ID]
-		typeName, _ := obj.(*types.TypeName)
-		if typeName == nil {
-			continue
-		}
-		typ := typeName.Type()
-		// Check if interface
-		if iface, ok := typ.Underlying().(*types.Interface); ok {
-			interfaceEntry = append(interfaceEntry, struct {
-				id        int
-				obj       types.Object
-				ifaceType *types.Interface
-			}{
-				id:        sym.ID,
-				obj:       obj,
-				ifaceType: iface,
-			})
-		} else {
-			// Must be a struct or other concrete type
-			typeEntry = append(typeEntry, struct {
-				id  int
-				obj types.Object
-				typ types.Type
-			}{
-				id:  sym.ID,
-				obj: obj,
-				typ: typ,
-			})
-		}
-	}
-
-	// Step 2: For each interface, check which concrete types implement it.
-	// Step 2: For each interface, check which concrete types implement it.
-	// If the interface is from an external package (not in objectToSymbol), we create a stub symbol earlier,
-	// so ifaceE should already have a valid symbol ID. We simply record the "implements" reference here.
+	// 1) For each interface, check which concrete types implement it
 	for _, ifaceE := range interfaceEntry {
 		ifaceType := ifaceE.ifaceType
 
 		for _, conc := range typeEntry {
-			// We check both T and *T (pointer) for the method set
 			if types.Implements(conc.typ, ifaceType) || types.Implements(types.NewPointer(conc.typ), ifaceType) {
 				r := Reference{
 					FromID:  conc.id,
@@ -622,14 +612,13 @@ func ExtractTypeRelations(
 		}
 	}
 
-	// Step 3: For each struct, detect embedded fields
+	// 2) For each struct, detect embedded fields
 	for _, conc := range typeEntry {
 		under := conc.typ.Underlying()
 		st, ok := under.(*types.Struct)
 		if !ok {
 			continue
 		}
-		// For each field, check if it's embedded
 		for i := 0; i < st.NumFields(); i++ {
 			f := st.Field(i)
 			if f.Embedded() {
@@ -641,33 +630,12 @@ func ExtractTypeRelations(
 					embedObj := named.Obj()
 					embedID, found := objectToSymbol[embedObj]
 					if !found {
-						// Create an external symbol stub if the embedded type is from outside loaded packages
-						objPkg := embedObj.Pkg()
-						if objPkg != nil {
-							maxID++
-							// Determine if it's an interface or struct
-							underEmbed := named.Underlying()
-							kind := SymbolKindStruct
-							if _, isIface := underEmbed.(*types.Interface); isIface {
-								kind = SymbolKindInterface
-							}
-
-							newSym := Symbol{
-								ID:          maxID,
-								Name:        embedObj.Name(),
-								Kind:        kind,
-								PackagePath: objPkg.Path(),
-								External:    true,
-							}
-							symbols = append(symbols, newSym)
-							objectToSymbol[embedObj] = maxID
-							embedID = maxID
-						} else {
-							// If we can't determine a package, skip
+						newID, success := getOrCreateStubForExternal(embedObj, objectToSymbol, &symbols, &maxID)
+						if !success {
 							continue
 						}
+						embedID = newID
 					}
-					// Record the embedding relationship
 					out = append(out, Reference{
 						FromID:  conc.id,
 						ToID:    embedID,
@@ -678,31 +646,21 @@ func ExtractTypeRelations(
 		}
 	}
 
-	// Step 4: For each interface, detect embedded interfaces
+	// 3) For each interface, detect embedded interfaces
 	for _, ifaceE := range interfaceEntry {
 		ifa := ifaceE.ifaceType
 		for i := 0; i < ifa.NumEmbeddeds(); i++ {
 			embeddedT := ifa.EmbeddedType(i)
 			if named, ok := embeddedT.(*types.Named); ok {
 				if _, ok2 := named.Underlying().(*types.Interface); ok2 {
-					embedID, found := objectToSymbol[named.Obj()]
+					embedObj := named.Obj()
+					embedID, found := objectToSymbol[embedObj]
 					if !found {
-						objPkg := named.Obj().Pkg()
-						if objPkg != nil {
-							maxID++
-							sym := Symbol{
-								ID:          maxID,
-								Name:        named.Obj().Name(),
-								Kind:        SymbolKindInterface,
-								PackagePath: objPkg.Path(),
-								External:    true,
-							}
-							symbols = append(symbols, sym)
-							objectToSymbol[named.Obj()] = maxID
-							embedID = maxID
-						} else {
+						newID, success := getOrCreateStubForExternal(embedObj, objectToSymbol, &symbols, &maxID)
+						if !success {
 							continue
 						}
+						embedID = newID
 					}
 					out = append(out, Reference{
 						FromID:  ifaceE.id,
@@ -714,7 +672,7 @@ func ExtractTypeRelations(
 		}
 	}
 
-	// Step 5: Create usage references from each field symbol to its type (if named).
+	// 4) Create usage references from each field symbol to its type (if named).
 	for _, sym := range symbols {
 		if sym.Kind != SymbolKindField {
 			continue
@@ -726,7 +684,7 @@ func ExtractTypeRelations(
 		}
 	}
 
-	// Step 6: Create usage references from each func/method to its param and return types.
+	// 5) Create usage references from each func/method to its param and return types.
 	for _, sym := range symbols {
 		if sym.Kind != SymbolKindFunc && sym.Kind != SymbolKindMethod {
 			continue
@@ -765,7 +723,6 @@ func findEnclosingFunctionID(
 ) int {
 	for _, decl := range fileAst.Decls {
 		if funcDecl, ok := decl.(*ast.FuncDecl); ok {
-			// Check if pos is inside the function's body
 			if funcDecl.Body != nil && funcDecl.Body.Pos() <= pos && pos < funcDecl.Body.End() {
 				// This identifier is within funcDecl's body
 				fnObj := pkg.TypesInfo.Defs[funcDecl.Name]
@@ -778,4 +735,14 @@ func findEnclosingFunctionID(
 		}
 	}
 	return -1
+}
+
+func getMaxSymbolID(objectToSymbol map[types.Object]int) int {
+	var maxID int
+	for _, sid := range objectToSymbol {
+		if sid > maxID {
+			maxID = sid
+		}
+	}
+	return maxID
 }
