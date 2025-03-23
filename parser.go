@@ -16,6 +16,7 @@ const (
 	SymbolKindPackage SymbolKind = "package"
 	SymbolKindType    SymbolKind = "type"
 	SymbolKindVar     SymbolKind = "var"
+	SymbolKindField   SymbolKind = "field"
 	SymbolKindFunc    SymbolKind = "func"
 	SymbolKindMethod  SymbolKind = "method"
 	SymbolKindConst   SymbolKind = "const"
@@ -138,6 +139,38 @@ func ExtractSymbols(pkgs []*packages.Package) (
 			symbols = append(symbols, symbol)
 
 			objectToSymbol[obj] = currentID
+		}
+	}
+
+	// Identify struct fields after collecting all symbols.
+	// We'll map ID -> Object so we can discover the actual *types.TypeName objects, then
+	// detect any underlying *types.Struct and mark its fields as "field".
+	idToObject := make(map[int]types.Object)
+	for obj, sid := range objectToSymbol {
+		idToObject[sid] = obj
+	}
+
+	symbolIndexMap := make(map[int]int)
+	for i, s := range symbols {
+		symbolIndexMap[s.ID] = i
+	}
+
+	for _, s := range symbols {
+		if s.Kind == SymbolKindType {
+			obj := idToObject[s.ID]
+			if typeName, ok := obj.(*types.TypeName); ok {
+				if st, ok := typeName.Type().Underlying().(*types.Struct); ok {
+					for i := 0; i < st.NumFields(); i++ {
+						fieldObj := st.Field(i)
+						if fieldID, found := objectToSymbol[fieldObj]; found {
+							fieldIdx := symbolIndexMap[fieldID]
+							symbols[fieldIdx].Kind = SymbolKindField
+							// Reuse 'Receiver' to store the struct's full type string
+							symbols[fieldIdx].Receiver = typeName.Type().String()
+						}
+					}
+				}
+			}
 		}
 	}
 

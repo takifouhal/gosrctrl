@@ -104,11 +104,28 @@ def main():
         elif sym_kind == "type":
             # Record a new class. Parent is the package node if we have one.
             recorded_id = db.record_class(name=sym_name, parent_id=pkg_id)
+        elif sym_kind == "field":
+            # This is a struct field. If there's a receiver string, find that struct as parent.
+            if receiver_str and receiver_str != "":
+                raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
+                potential_type_name = raw_receiver.split(".")[-1]
+                parent_id = None
+                for s2 in symbols:
+                    if (s2["Kind"] == "type" and
+                        s2["Name"] == potential_type_name and
+                        s2["PackagePath"] == package_path):
+                        parent_id = symbol_id_map.get(s2["ID"])
+                        break
+                if parent_id is None:
+                    parent_id = pkg_id
+                recorded_id = db.record_field(name=sym_name, parent_id=parent_id)
+            else:
+                recorded_id = db.record_field(name=sym_name, parent_id=pkg_id)
         elif sym_kind in ("var", "const"):
             # Record a field. Parent is the package node
             recorded_id = db.record_field(name=sym_name, parent_id=pkg_id)
         elif sym_kind in ("func", "method"):
-            # Method if there's a receiver
+            # Method if there's a receiver (making it a method)
             if receiver_str and receiver_str != "":
                 raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
                 potential_type_name = raw_receiver.split(".")[-1]
