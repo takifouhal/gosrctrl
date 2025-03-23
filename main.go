@@ -103,7 +103,20 @@ func main() {
 	fmt.Printf("\nJSON export written to %s\n", jsonOutput)
 
 	// Next: call Python script to generate the .srctrldb
-	generateDBCmd := exec.Command("python3", "generate_db.py", "-i", jsonOutput, "-o", dbOutput)
+	// Write the embedded Python script to a temporary file
+	tmpScript, err := os.CreateTemp("", "generate_db_*.py")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating temp script file: %v\n", err)
+		os.Exit(1)
+	}
+	tmpScriptPath := tmpScript.Name()
+	if _, err := tmpScript.Write(generateDbScript); err != nil {
+		fmt.Fprintf(os.Stderr, "Error writing to temp script file: %v\n", err)
+		os.Exit(1)
+	}
+	tmpScript.Close()
+
+	generateDBCmd := exec.Command("python3", tmpScriptPath, "-i", jsonOutput, "-o", dbOutput)
 	generateDBCmd.Stdout = os.Stdout
 	generateDBCmd.Stderr = os.Stderr
 
@@ -112,6 +125,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error generating Sourcetrail DB: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Clean up the temporary script file
+	os.Remove(tmpScriptPath)
 
 	fmt.Printf("Sourcetrail DB created at: %s\n", dbOutput)
 

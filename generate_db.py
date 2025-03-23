@@ -63,7 +63,7 @@ def main():
 
     # Record each file with language "go"
     for fpath in unique_files:
-        abs_path = str(Path(fpath).resolve())
+        abs_path = Path(fpath).resolve()
         file_id = db.record_file(abs_path)
         # If "go" is not recognized, you may have to use "cpp" for highlighting
         db.record_file_language(file_id, "go")
