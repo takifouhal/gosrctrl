@@ -260,10 +260,20 @@ def main():
             # Skip function->package usage references that may appear spurious
             from_sym = next((s for s in symbols if s["ID"] == from_id), None)
             to_sym = next((s for s in symbols if s["ID"] == to_id), None)
+            if not (from_sym and to_sym):
+                continue
+
+            # Skip function->package usage references that may appear spurious
             if (ref_type in ("usage", "call")
-                and from_sym and to_sym
                 and from_sym["Kind"] in ("func", "method")
                 and to_sym["Kind"] == "package"):
+                continue
+
+            # Skip trivial usage of var/const in the same package to reduce noise
+            # (only if ref_type is "usage")
+            if (ref_type == "usage"
+                and from_sym.get("PackagePath") == to_sym.get("PackagePath")
+                and to_sym["Kind"] in ("var", "const")):
                 continue
 
             if ref_type == "call":
@@ -273,7 +283,12 @@ def main():
                 ref_id = db.record_ref_inheritance(from_numbat_id, to_numbat_id)
             elif ref_type == "import":
                 ref_id = db.record_ref_import(from_numbat_id, to_numbat_id)
+            elif ref_type == "write":
+                # Numbat doesn't have a separate "write" edge, so record as usage
+                # Optionally add special hover text or logging if needed
+                ref_id = db.record_ref_usage(from_numbat_id, to_numbat_id)
             else:
+                # default usage
                 ref_id = db.record_ref_usage(from_numbat_id, to_numbat_id)
 
             file_path = ref.get("File", "")

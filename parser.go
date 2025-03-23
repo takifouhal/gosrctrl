@@ -331,11 +331,15 @@ func ExtractReferences(
 	for _, pkg := range pkgs {
 		// Build a map of positions that correspond to a call expression
 		callPositions := map[token.Pos]bool{}
+		// Build a map of positions that correspond to left-hand side of assignments ("writes")
+		writePositions := map[token.Pos]bool{}
+
 		for _, f := range pkg.Syntax {
 			if f == nil {
 				continue
 			}
 			ast.Inspect(f, func(n ast.Node) bool {
+				// Detect calls
 				if c, ok := n.(*ast.CallExpr); ok {
 					switch fn := c.Fun.(type) {
 					case *ast.Ident:
@@ -344,6 +348,16 @@ func ExtractReferences(
 						callPositions[fn.Sel.Pos()] = true
 					}
 				}
+
+				// Detect assignments
+				if assign, ok := n.(*ast.AssignStmt); ok {
+					for _, lhs := range assign.Lhs {
+						if ident, ok := lhs.(*ast.Ident); ok {
+							writePositions[ident.Pos()] = true
+						}
+					}
+				}
+
 				return true
 			})
 		}
@@ -384,10 +398,12 @@ func ExtractReferences(
 			}
 
 			// Decide reference type
-			refType := "usage"
-			if callPositions[id.Pos()] {
-				refType = "call"
-			}
+				refType := "usage"
+				if callPositions[id.Pos()] {
+					refType = "call"
+				} else if writePositions[id.Pos()] {
+					refType = "write"
+				}
 
 			// Build the reference
 			r := Reference{
