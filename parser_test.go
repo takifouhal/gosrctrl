@@ -10,7 +10,7 @@ func TestLoadPackages(t *testing.T) {
 	// to confirm that parsing doesn't error out and returns at least one package.
 	path := filepath.Join(".", "testdata")
 
-	pkgs, err := LoadPackages(path)
+	pkgs, err := LoadPackages(path, true)
 	if err != nil {
 		t.Fatalf("Expected no error loading packages, got: %v", err)
 	}
@@ -21,9 +21,9 @@ func TestLoadPackages(t *testing.T) {
 
 func TestExtractSymbols(t *testing.T) {
 	path := filepath.Join(".", "testdata")
-	pkgs, err := LoadPackages(path)
+	pkgs, err := LoadPackages(path, true)
 	if err != nil {
-		t.Fatalf("Failed to load packages for test: %v", err)
+		t.Fatalf("Failed to load packages for reference test: %v", err)
 	}
 
 	symbols, _, objectToSymbol, packageToSymbol := ExtractSymbols(pkgs)
@@ -61,7 +61,7 @@ func TestExtractSymbols(t *testing.T) {
 
 func TestExtractReferences(t *testing.T) {
 	path := filepath.Join(".", "testdata")
-	pkgs, err := LoadPackages(path)
+	pkgs, err := LoadPackages(path, true)
 	if err != nil {
 		t.Fatalf("Failed to load packages for reference test: %v", err)
 	}

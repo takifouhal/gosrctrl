@@ -53,7 +53,8 @@ type Reference struct {
 
 // LoadPackages loads and parses all Go packages beneath the specified path.
 // It returns a slice of parsed packages (with syntax and type info) or an error.
-func LoadPackages(path string) ([]*packages.Package, error) {
+// When includeTests is true, test packages and testdata directories are processed.
+func LoadPackages(path string, includeTests bool) ([]*packages.Package, error) {
 	cfg := &packages.Config{
 		Mode: packages.NeedName |
 			packages.NeedFiles |
@@ -61,6 +62,8 @@ func LoadPackages(path string) ([]*packages.Package, error) {
 			packages.NeedTypes |
 			packages.NeedTypesInfo,
 		Dir: path,
+		// Include test packages when requested
+		Tests: includeTests,
 	}
 
 	pkgs, err := packages.Load(cfg, "./...")

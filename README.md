@@ -74,6 +74,7 @@ gosrctrl -path /path/to/go/project -out output.srctrldb
 - `-path` (default: current directory) – The path to the Go project you want to parse.
 - `-out` (default: `output.srctrldb`) – Output file name (Sourcetrail database). If you provide a name without `.srctrldb`, it will be appended automatically.
 - `-keepjson` (default: false) – If set to true, keeps the intermediate JSON file (otherwise it is removed after database creation).
+- `-includetests` (default: true) – If set to true, includes test files and testdata directories in the analysis. Set to false to exclude test code.
 
 **What happens under the hood?**
 1. The Go code loads and parses the Go packages in the specified `-path`.

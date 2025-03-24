@@ -16,10 +16,12 @@ func main() {
 	var pathArg string
 	var outArg string
 	var keepJSON bool
+	var includeTests bool
 
 	flag.StringVar(&pathArg, "path", ".", "Path to the Go project (default: current directory)")
 	flag.StringVar(&outArg, "out", "output.srctrldb", "Output file for Sourcetrail DB (default: output.srctrldb)")
 	flag.BoolVar(&keepJSON, "keepjson", false, "Keep intermediate JSON file (default: false)")
+	flag.BoolVar(&includeTests, "includetests", true, "Include test files and testdata directories (default: true)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(),
@@ -55,9 +57,11 @@ func main() {
 	fmt.Println("---------------------------------------------")
 	fmt.Printf("Project path: %s\n", pathArg)
 	fmt.Printf("Output file : %s\n", outArg)
+	fmt.Printf("Include tests: %v\n", includeTests)
 
 	// Load Go packages to parse
-	pkgs, loadErr := LoadPackages(pathArg)
+	fmt.Printf("Parsing Go packages in: %s\n", pathArg)
+	pkgs, loadErr := LoadPackages(pathArg, includeTests)
 	if loadErr != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", loadErr)
 		os.Exit(1)
