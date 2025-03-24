@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -23,6 +24,25 @@ const (
 	SymbolKindMethod    SymbolKind = "method"
 	SymbolKindConst     SymbolKind = "const"
 	SymbolKindInterface SymbolKind = "interface"
+)
+
+// Global configuration options
+var (
+	// EnableEnhancedExternalTypes controls whether to use enhanced external type processing
+	// which creates more stubs for external types and their fields/methods
+	EnableEnhancedExternalTypes bool = true
+
+	// VerboseLogging controls whether to print detailed debug information
+	VerboseLogging bool = false
+
+	// IgnoreCompileErrors controls whether to continue parsing even if there are compile errors
+	IgnoreCompileErrors bool = false
+
+	// IncludeStdLib controls whether to process standard library packages
+	IncludeStdLib bool = false
+
+	// IncludePrivate controls whether to process unexported symbols
+	IncludePrivate bool = false
 )
 
 // Symbol stores metadata about a single declared symbol in the codebase
@@ -72,61 +92,217 @@ func LoadPackages(path string, includeTests bool) ([]*packages.Package, error) {
 	}
 
 	// Check for any loading errors in the loaded packages
-	if packages.PrintErrors(pkgs) > 0 {
-		return nil, fmt.Errorf("errors encountered while loading packages")
+	if errorCount := packages.PrintErrors(pkgs); errorCount > 0 {
+		if !IgnoreCompileErrors {
+			return nil, fmt.Errorf("errors encountered while loading packages")
+		}
+		fmt.Printf("Warning: %d errors encountered while loading packages, but proceeding anyway due to -ignore-errors flag\n", errorCount)
 	}
 
 	return pkgs, nil
 }
 
-// getOrCreateStubForExternal ensures we have a Symbol ID for the given object,
-// creating an external symbol stub if it doesn't exist. Returns the symbol ID
-// and a boolean indicating success. If the object cannot be resolved to a package,
-// returns -1, false.
+// IsStdLibPkg checks if a package path is from the Go standard library
+func IsStdLibPkg(pkgPath string) bool {
+	// Standard library packages have no "." in their path
+	return !strings.Contains(pkgPath, ".")
+}
+
+// getOrCreateStubForExternal creates a stub for an external type if it doesn't exist
 func getOrCreateStubForExternal(
 	obj types.Object,
 	objectToSymbol map[types.Object]int,
-	symbols *[]Symbol,
+	symbolsPtr *[]Symbol,
 	maxID *int,
 ) (int, bool) {
-
-	if existingID, found := objectToSymbol[obj]; found {
-		return existingID, true
+	// If the object is already registered, return its ID
+	if sid, found := objectToSymbol[obj]; found {
+		return sid, true
 	}
 
-	objPkg := obj.Pkg()
-	if objPkg == nil {
-		// If we can't determine a package, we can't create a meaningful stub.
-		return -1, false
+	// Only Named types are eligible
+	named, ok := obj.Type().(*types.Named)
+	if !ok {
+		return 0, false
 	}
 
-	// Bump ID for the new symbol
-	*maxID++
-	stubKind := classifyObject(obj)
+	// Skip if not enabled or if the object doesn't have a package
+	if !EnableEnhancedExternalTypes || obj.Pkg() == nil {
+		return 0, false
+	}
 
-	// Adjust if the object is a named type that's actually struct or interface
-	if stubKind == SymbolKindType {
-		if named, okType := obj.Type().(*types.Named); okType {
-			if _, isIface := named.Underlying().(*types.Interface); isIface {
-				stubKind = SymbolKindInterface
-			} else if _, isStruct := named.Underlying().(*types.Struct); isStruct {
-				stubKind = SymbolKindStruct
+	// Get package information
+	pkgPath := obj.Pkg().Path()
+
+	// Skip standard library if option set
+	if IsStdLibPkg(pkgPath) && !IncludeStdLib {
+		if VerboseLogging {
+			fmt.Printf("[DEBUG EXTERNAL] Skipping stdlib type %s.%s\n", pkgPath, obj.Name())
+		}
+		return 0, false
+	}
+
+	// Only process exported types unless configured otherwise
+	if !IncludePrivate && !obj.Exported() {
+		if VerboseLogging {
+			fmt.Printf("[DEBUG EXTERNAL] Skipping unexported type %s.%s\n", pkgPath, obj.Name())
+		}
+		return 0, false
+	}
+
+	// Create the new symbol for the external type
+	newSid := *maxID + 1
+	*maxID = newSid
+	typeName := obj.Name()
+
+	// Check the underlying type to determine symbol kind
+	var kind SymbolKind
+	var sig string
+
+	switch named.Underlying().(type) {
+	case *types.Struct:
+		kind = SymbolKindStruct
+		sig = fmt.Sprintf("struct %s.%s { ... }", pkgPath, typeName)
+	case *types.Interface:
+		kind = SymbolKindInterface
+		sig = fmt.Sprintf("interface %s.%s { ... }", pkgPath, typeName)
+	default:
+		kind = SymbolKindType
+		sig = fmt.Sprintf("type %s.%s", pkgPath, typeName)
+	}
+
+	// Create the symbol and register it
+	symbol := Symbol{
+		ID:          newSid,
+		Name:        typeName,
+		Kind:        kind,
+		PackagePath: pkgPath,
+		File:        fmt.Sprintf("external://%s/%s.go", pkgPath, strings.ToLower(typeName)),
+		Line:        1,
+		Column:      1,
+		Sig:         sig,
+		External:    true,
+		ParentID:    0,
+	}
+
+	*symbolsPtr = append(*symbolsPtr, symbol)
+	objectToSymbol[obj] = newSid
+
+	if VerboseLogging {
+		fmt.Printf("[DEBUG EXTERNAL] Created external symbol ID %d for %s.%s\n",
+			newSid, pkgPath, obj.Name())
+	}
+
+	return newSid, true
+}
+
+// formatExternalTypeSignature creates a more descriptive signature for external types
+func formatExternalTypeSignature(obj types.Object) string {
+	if obj.Pkg() == nil {
+		return obj.Name()
+	}
+
+	switch t := obj.(type) {
+	case *types.TypeName:
+		if named, ok := t.Type().(*types.Named); ok {
+			if st, ok := named.Underlying().(*types.Struct); ok {
+				// For structs, include basic field information
+				numFields := st.NumFields()
+				sig := fmt.Sprintf("struct %s.%s {", obj.Pkg().Path(), obj.Name())
+				if numFields > 0 {
+					sig += " ... " + strconv.Itoa(numFields) + " fields"
+				}
+				sig += " }"
+				return sig
+			} else if iface, ok := named.Underlying().(*types.Interface); ok {
+				// For interfaces, include method information
+				numMethods := iface.NumMethods()
+				sig := fmt.Sprintf("interface %s.%s {", obj.Pkg().Path(), obj.Name())
+				if numMethods > 0 {
+					sig += " ... " + strconv.Itoa(numMethods) + " methods"
+				}
+				sig += " }"
+				return sig
 			}
 		}
 	}
 
-	stubSym := Symbol{
-		ID:          *maxID,
-		Name:        obj.Name(),
-		Kind:        stubKind,
-		PackagePath: objPkg.Path(),
-		External:    true,
+	// Default format: package.Symbol
+	return fmt.Sprintf("%s.%s", obj.Pkg().Path(), obj.Name())
+}
+
+// extractExternalTypeMembers attempts to extract key fields/methods from external types
+// to create stubs for them as well, improving visualization
+func extractExternalTypeMembers(
+	named *types.Named,
+	objectToSymbol map[types.Object]int,
+	symbols *[]Symbol,
+	maxID *int,
+	parentID int,
+) {
+	// For struct types, try to add field stubs
+	if st, ok := named.Underlying().(*types.Struct); ok {
+		for i := 0; i < st.NumFields(); i++ {
+			field := st.Field(i)
+			if field.Exported() {
+				// Only create stubs for exported fields of external types
+				*maxID++
+				fieldSym := Symbol{
+					ID:          *maxID,
+					Name:        field.Name(),
+					Kind:        SymbolKindField,
+					PackagePath: named.Obj().Pkg().Path(),
+					ParentID:    parentID,
+					External:    true,
+				}
+				*symbols = append(*symbols, fieldSym)
+				objectToSymbol[field] = *maxID
+
+				// Also add usage reference from field to its type
+				fieldType := field.Type()
+				addTypeUsageRef(fieldSym.ID, fieldType, nil, objectToSymbol, symbols, maxID)
+			}
+		}
 	}
 
-	*symbols = append(*symbols, stubSym)
-	objectToSymbol[obj] = *maxID
+	// Add method stubs for both struct and interface types
+	// First check interface methods
+	if iface, ok := named.Underlying().(*types.Interface); ok {
+		for i := 0; i < iface.NumMethods(); i++ {
+			method := iface.Method(i)
+			if method.Exported() {
+				*maxID++
+				methodSym := Symbol{
+					ID:          *maxID,
+					Name:        method.Name(),
+					Kind:        SymbolKindMethod,
+					PackagePath: named.Obj().Pkg().Path(),
+					ParentID:    parentID,
+					External:    true,
+				}
+				*symbols = append(*symbols, methodSym)
+				objectToSymbol[method] = *maxID
+			}
+		}
+	}
 
-	return *maxID, true
+	// Then add methods declared on the type
+	for i := 0; i < named.NumMethods(); i++ {
+		method := named.Method(i)
+		if method.Exported() {
+			*maxID++
+			methodSym := Symbol{
+				ID:          *maxID,
+				Name:        method.Name(),
+				Kind:        SymbolKindMethod,
+				PackagePath: named.Obj().Pkg().Path(),
+				ParentID:    parentID,
+				External:    true,
+			}
+			*symbols = append(*symbols, methodSym)
+			objectToSymbol[method] = *maxID
+		}
+	}
 }
 
 // ExtractSymbols traverses the provided Go packages and collects symbol definitions
@@ -889,16 +1065,107 @@ func extractFieldTypeUsageReferences(
 	var out []Reference
 	fmt.Println("Processing field-to-type usage references...")
 
+	fieldCount := 0
+	processedCount := 0
+
 	for _, sym := range symbols {
 		if sym.Kind != SymbolKindField {
 			continue
 		}
+
+		fieldCount++
 		fieldObj := idToObject[sym.ID]
+		if fieldObj == nil {
+			if VerboseLogging {
+				fmt.Printf("[DEBUG FIELD] Field symbol ID %d with name %s has no corresponding object\n",
+					sym.ID, sym.Name)
+			}
+			continue
+		}
+
 		if fieldVar, ok := fieldObj.(*types.Var); ok {
+			processedCount++
 			fieldType := fieldVar.Type()
+
+			// Get parent struct info for better debugging
+			parentName := "unknown"
+			if sym.ParentID > 0 && VerboseLogging {
+				for _, parentSym := range symbols {
+					if parentSym.ID == sym.ParentID {
+						parentName = parentSym.Name
+						break
+					}
+				}
+			}
+
+			if VerboseLogging {
+				fmt.Printf("[DEBUG FIELD] Processing field %s.%s of type %s\n",
+					parentName, sym.Name, fieldType.String())
+			}
+
+			prevLen := len(out)
 			out = addTypeUsageRef(sym.ID, fieldType, out, objectToSymbol, symbolsPtr, maxID)
+
+			if VerboseLogging {
+				if len(out) > prevLen {
+					fmt.Printf("[DEBUG FIELD] Added %d type usage reference(s) for field %s\n",
+						len(out)-prevLen, sym.Name)
+				} else {
+					fmt.Printf("[DEBUG FIELD WARNING] No type usage references added for field %s of type %s\n",
+						sym.Name, fieldType.String())
+
+					// Special handling for external types that might be problematic
+					// First attempt to explicitly create a stub for this type
+					if EnableEnhancedExternalTypes {
+						if named, isNamed := fieldType.(*types.Named); isNamed && named.Obj().Pkg() != nil {
+							fmt.Printf("[DEBUG FIELD] Attempting special handling for named external type %s.%s\n",
+								named.Obj().Pkg().Path(), named.Obj().Name())
+
+							if _, found := objectToSymbol[named.Obj()]; !found {
+								newID, success := getOrCreateStubForExternal(named.Obj(), objectToSymbol, symbolsPtr, maxID)
+								if success {
+									out = append(out, Reference{
+										FromID:  sym.ID,
+										ToID:    newID,
+										RefType: "usage",
+									})
+									fmt.Printf("[DEBUG FIELD] Successfully added special usage reference from field %s to type %s\n",
+										sym.Name, named.Obj().Name())
+								}
+							}
+						} else if ptr, isPtr := fieldType.(*types.Pointer); isPtr {
+							if named, isNamed := ptr.Elem().(*types.Named); isNamed && named.Obj().Pkg() != nil {
+								fmt.Printf("[DEBUG FIELD] Attempting special handling for pointer to named external type %s.%s\n",
+									named.Obj().Pkg().Path(), named.Obj().Name())
+
+								if _, found := objectToSymbol[named.Obj()]; !found {
+									newID, success := getOrCreateStubForExternal(named.Obj(), objectToSymbol, symbolsPtr, maxID)
+									if success {
+										out = append(out, Reference{
+											FromID:  sym.ID,
+											ToID:    newID,
+											RefType: "usage",
+										})
+										fmt.Printf("[DEBUG FIELD] Successfully added special usage reference from field %s to pointer type %s\n",
+											sym.Name, named.Obj().Name())
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		} else if VerboseLogging {
+			fmt.Printf("[DEBUG FIELD WARNING] Field symbol ID %d with name %s has non-var object type %T\n",
+				sym.ID, sym.Name, fieldObj)
 		}
 	}
+
+	if VerboseLogging {
+		fmt.Printf("[DEBUG FIELD SUMMARY] Processed %d/%d field symbols, created %d usage references\n",
+			processedCount, fieldCount, len(out))
+	}
+
 	return out
 }
 
@@ -951,9 +1218,36 @@ func addTypeUsageRef(
 	symbolsPtr *[]Symbol,
 	maxID *int,
 ) []Reference {
+	return addTypeUsageRefWithDepth(fromSid, t, out, objectToSymbol, symbolsPtr, maxID, 0)
+}
+
+// addTypeUsageRefWithDepth is the internal implementation of addTypeUsageRef with a recursion depth counter
+func addTypeUsageRefWithDepth(
+	fromSid int,
+	t types.Type,
+	out []Reference,
+	objectToSymbol map[types.Object]int,
+	symbolsPtr *[]Symbol,
+	maxID *int,
+	depth int,
+) []Reference {
+	// Prevent stack overflows with deep recursion
+	const maxRecursionDepth = 5
+	if depth > maxRecursionDepth {
+		if VerboseLogging {
+			fmt.Printf("[DEBUG TYPE USAGE] Recursion depth limit reached (%d) for type %s\n",
+				depth, t.String())
+		}
+		return out
+	}
+
+	if out == nil {
+		out = []Reference{} // Initialize if nil
+	}
+
 	switch tt := t.(type) {
 	case *types.Pointer:
-		return addTypeUsageRef(fromSid, tt.Elem(), out, objectToSymbol, symbolsPtr, maxID)
+		return addTypeUsageRefWithDepth(fromSid, tt.Elem(), out, objectToSymbol, symbolsPtr, maxID, depth+1)
 	case *types.Named:
 		if typeSid, found := objectToSymbol[tt.Obj()]; found {
 			out = append(out, Reference{
@@ -961,6 +1255,10 @@ func addTypeUsageRef(
 				ToID:    typeSid,
 				RefType: "usage",
 			})
+			if VerboseLogging {
+				fmt.Printf("[DEBUG TYPE USAGE] Created usage reference from %d to existing type %s (ID: %d)\n",
+					fromSid, tt.Obj().Name(), typeSid)
+			}
 		} else {
 			// Possibly create an external stub
 			newID, success := getOrCreateStubForExternal(tt.Obj(), objectToSymbol, symbolsPtr, maxID)
@@ -970,18 +1268,119 @@ func addTypeUsageRef(
 					ToID:    newID,
 					RefType: "usage",
 				})
+				if VerboseLogging {
+					fmt.Printf("[DEBUG TYPE USAGE] Created usage reference from %d to new external type %s (ID: %d)\n",
+						fromSid, tt.Obj().Name(), newID)
+				}
+			} else if VerboseLogging {
+				// Log when we fail to create a reference to help with debugging
+				pkg := "unknown"
+				if tt.Obj().Pkg() != nil {
+					pkg = tt.Obj().Pkg().Path()
+				}
+				fmt.Printf("[DEBUG TYPE USAGE WARNING] Failed to create stub for external type %s.%s\n",
+					pkg, tt.Obj().Name())
 			}
 		}
+		// For named composite types (structs with fields, etc.), we should also process the underlying type
+		// to ensure we capture all possible relationships
+		_, isStruct := tt.Underlying().(*types.Struct)
+		_, isInterface := tt.Underlying().(*types.Interface)
+		if EnableEnhancedExternalTypes && (isStruct || isInterface) && depth < maxRecursionDepth-1 {
+			out = addTypeUsageRefForUnderlyingWithDepth(fromSid, tt.Underlying(), out, objectToSymbol, symbolsPtr, maxID, depth+1)
+		}
 	case *types.Slice:
-		return addTypeUsageRef(fromSid, tt.Elem(), out, objectToSymbol, symbolsPtr, maxID)
+		return addTypeUsageRefWithDepth(fromSid, tt.Elem(), out, objectToSymbol, symbolsPtr, maxID, depth+1)
 	case *types.Array:
-		return addTypeUsageRef(fromSid, tt.Elem(), out, objectToSymbol, symbolsPtr, maxID)
+		return addTypeUsageRefWithDepth(fromSid, tt.Elem(), out, objectToSymbol, symbolsPtr, maxID, depth+1)
 	case *types.Chan:
-		return addTypeUsageRef(fromSid, tt.Elem(), out, objectToSymbol, symbolsPtr, maxID)
+		return addTypeUsageRefWithDepth(fromSid, tt.Elem(), out, objectToSymbol, symbolsPtr, maxID, depth+1)
 	case *types.Map:
-		out = addTypeUsageRef(fromSid, tt.Key(), out, objectToSymbol, symbolsPtr, maxID)
-		return addTypeUsageRef(fromSid, tt.Elem(), out, objectToSymbol, symbolsPtr, maxID)
+		out = addTypeUsageRefWithDepth(fromSid, tt.Key(), out, objectToSymbol, symbolsPtr, maxID, depth+1)
+		return addTypeUsageRefWithDepth(fromSid, tt.Elem(), out, objectToSymbol, symbolsPtr, maxID, depth+1)
+	case *types.Struct:
+		// For anonymous structs, we should still process their fields
+		if EnableEnhancedExternalTypes && depth < maxRecursionDepth-1 {
+			return addTypeUsageRefForUnderlyingWithDepth(fromSid, tt, out, objectToSymbol, symbolsPtr, maxID, depth+1)
+		}
+	case *types.Interface:
+		// For anonymous interfaces, we should still process their methods
+		if EnableEnhancedExternalTypes && depth < maxRecursionDepth-1 {
+			return addTypeUsageRefForUnderlyingWithDepth(fromSid, tt, out, objectToSymbol, symbolsPtr, maxID, depth+1)
+		}
 	}
+	return out
+}
+
+// addTypeUsageRefForUnderlying adds type references for fields of structs or methods of interfaces
+func addTypeUsageRefForUnderlying(
+	fromSid int,
+	t types.Type,
+	out []Reference,
+	objectToSymbol map[types.Object]int,
+	symbolsPtr *[]Symbol,
+	maxID *int,
+) []Reference {
+	return addTypeUsageRefForUnderlyingWithDepth(fromSid, t, out, objectToSymbol, symbolsPtr, maxID, 0)
+}
+
+// addTypeUsageRefForUnderlyingWithDepth is the internal implementation with recursion depth counter
+func addTypeUsageRefForUnderlyingWithDepth(
+	fromSid int,
+	t types.Type,
+	out []Reference,
+	objectToSymbol map[types.Object]int,
+	symbolsPtr *[]Symbol,
+	maxID *int,
+	depth int,
+) []Reference {
+	// Prevent stack overflows with deep recursion
+	const maxRecursionDepth = 5
+	if depth > maxRecursionDepth {
+		if VerboseLogging {
+			fmt.Printf("[DEBUG TYPE USAGE] Recursion depth limit reached (%d) for underlying type %s\n",
+				depth, t.String())
+		}
+		return out
+	}
+
+	if out == nil {
+		out = []Reference{} // Initialize if nil
+	}
+
+	switch tt := t.(type) {
+	case *types.Struct:
+		// Add references for all field types
+		for i := 0; i < tt.NumFields(); i++ {
+			field := tt.Field(i)
+			fieldType := field.Type()
+			out = addTypeUsageRefWithDepth(fromSid, fieldType, out, objectToSymbol, symbolsPtr, maxID, depth+1)
+		}
+	case *types.Interface:
+		// Add references for all method signature types
+		for i := 0; i < tt.NumMethods(); i++ {
+			method := tt.Method(i)
+			sig, ok := method.Type().(*types.Signature)
+			if !ok {
+				continue
+			}
+
+			// Add references for param types
+			if params := sig.Params(); params != nil {
+				for j := 0; j < params.Len(); j++ {
+					out = addTypeUsageRefWithDepth(fromSid, params.At(j).Type(), out, objectToSymbol, symbolsPtr, maxID, depth+1)
+				}
+			}
+
+			// Add references for return types
+			if results := sig.Results(); results != nil {
+				for j := 0; j < results.Len(); j++ {
+					out = addTypeUsageRefWithDepth(fromSid, results.At(j).Type(), out, objectToSymbol, symbolsPtr, maxID, depth+1)
+				}
+			}
+		}
+	}
+
 	return out
 }
 

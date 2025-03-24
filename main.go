@@ -17,11 +17,17 @@ func main() {
 	var outArg string
 	var keepJSON bool
 	var includeTests bool
+	var enhancedExternalTypes bool
+	var verboseLogging bool
+	var ignoreCompileErrors bool
 
 	flag.StringVar(&pathArg, "path", ".", "Path to the Go project (default: current directory)")
 	flag.StringVar(&outArg, "out", "output.srctrldb", "Output file for Sourcetrail DB (default: output.srctrldb)")
 	flag.BoolVar(&keepJSON, "keepjson", false, "Keep intermediate JSON file (default: false)")
 	flag.BoolVar(&includeTests, "includetests", true, "Include test files and testdata directories (default: true)")
+	flag.BoolVar(&enhancedExternalTypes, "enhanced-external", true, "Enable enhanced external type processing (default: true)")
+	flag.BoolVar(&verboseLogging, "verbose", false, "Enable verbose debug logging (default: false)")
+	flag.BoolVar(&ignoreCompileErrors, "ignore-errors", false, "Continue parsing even if there are compile errors (default: false)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(),
@@ -33,6 +39,11 @@ func main() {
 	}
 
 	flag.Parse()
+
+	// Set global options for parsing
+	EnableEnhancedExternalTypes = enhancedExternalTypes
+	VerboseLogging = verboseLogging
+	IgnoreCompileErrors = ignoreCompileErrors
 
 	// If help was invoked or no flags provided, display usage
 	if len(os.Args) == 1 {
