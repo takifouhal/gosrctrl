@@ -191,6 +191,22 @@ def main():
     package_map = {}
 
     # STEP 2: Insert all symbols.
+    # Sort symbols so that the parent type (struct/interface) is recorded before methods.
+    def kind_priority(k):
+        priority_map = {
+            "package": 0,
+            "struct": 1,
+            "interface": 1,
+            "type": 1,
+            "field": 2,
+            "func": 3,
+            "method": 3,
+            "var": 4,
+            "const": 4
+        }
+        return priority_map.get(k, 5)
+    symbols.sort(key=lambda s: kind_priority(s["Kind"]))
+
     for sym in symbols:
         sym_id = sym["ID"]
         sym_name = sym["Name"]

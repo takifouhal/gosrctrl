@@ -139,36 +139,36 @@ func ExtractSymbols(pkgs []*packages.Package) (
 	map[types.Object]int,
 	map[*packages.Package]int,
 ) {
+	// We'll collect symbols in multiple passes so that struct/interface
+	// symbols are always created before their methods are attached.
+
 	var symbols []Symbol
 	var importRefs []Reference
 	objectToSymbol := make(map[types.Object]int)
 	packageToSymbol := make(map[*packages.Package]int)
-
 	var currentID int
+
+	// ------------------------------------------------------------
+	// Pass 0: create a package symbol for each package
 	for _, pkg := range pkgs {
-		// Create a symbol entry for the package itself
 		currentID++
-		packageSymbol := Symbol{
+		pkgSym := Symbol{
 			ID:          currentID,
 			Name:        pkg.Name,
 			Kind:        SymbolKindPackage,
 			PackagePath: pkg.PkgPath,
-			File:        "",
-			Line:        0,
-			Column:      0,
-			Receiver:    "",
-			Sig:         "",
 		}
-		symbols = append(symbols, packageSymbol)
+		symbols = append(symbols, pkgSym)
 		packageToSymbol[pkg] = currentID
+	}
 
-		// For each defined identifier in pkg.TypesInfo.Defs, collect a symbol
+	// ------------------------------------------------------------
+	// Pass 1: register all "type" definitions (TypeName), ignoring methods for now.
+	for _, pkg := range pkgs {
 		for id, obj := range pkg.TypesInfo.Defs {
 			if obj == nil {
-				// This identifier is not a definition
 				continue
 			}
-
 			// Skip local variables or constants (non-struct fields) by checking parent scope
 			switch v := obj.(type) {
 			case *types.Var:
@@ -187,17 +187,60 @@ func ExtractSymbols(pkgs []*packages.Package) (
 				continue
 			}
 
-			kind := classifyObject(obj)
-			receiver := ""
+			// We only handle type declarations here (e.g. *types.TypeName).
+			if typeName, ok := obj.(*types.TypeName); ok {
+				currentID++
+				symbol := Symbol{
+					ID:          currentID,
+					Name:        typeName.Name(),
+					Kind:        SymbolKindType, // We'll refine struct/interface later
+					PackagePath: pkg.PkgPath,
+					File:        pos.Filename,
+					Line:        pos.Line,
+					Column:      pos.Column,
+				}
+				// The parent is the package symbol
+				if pkgID, found := packageToSymbol[pkg]; found {
+					symbol.ParentID = pkgID
+				}
+				symbols = append(symbols, symbol)
+				objectToSymbol[obj] = currentID
+			}
+		}
+	}
 
-			// If it's a function, check if there's a receiver (making it a method)
-			if fn, ok := obj.(*types.Func); ok {
-				sig, _ := fn.Type().(*types.Signature)
-				if sig != nil && sig.Recv() != nil {
-					receiver = sig.Recv().Type().String()
+	// ------------------------------------------------------------
+	// Pass 2: register non-type defs (func, var, const, also *types.PkgName for imports).
+	for _, pkg := range pkgs {
+		pkgSymID := packageToSymbol[pkg]
+		for id, obj := range pkg.TypesInfo.Defs {
+			if obj == nil {
+				continue
+			}
+
+			// We skip type names here, because they were already handled
+			if _, isTypeName := obj.(*types.TypeName); isTypeName {
+				continue
+			}
+
+			// Skip local variables or constants (non-struct fields) by checking parent scope
+			switch v := obj.(type) {
+			case *types.Var:
+				if !v.IsField() && v.Parent() != pkg.Types.Scope() {
+					continue
+				}
+			case *types.Const:
+				if v.Parent() != pkg.Types.Scope() {
+					continue
 				}
 			}
 
+			pos := pkg.Fset.Position(id.Pos())
+			if !pos.IsValid() {
+				continue
+			}
+
+			kind := classifyObject(obj)
 			currentID++
 			symbol := Symbol{
 				ID:          currentID,
@@ -207,18 +250,15 @@ func ExtractSymbols(pkgs []*packages.Package) (
 				File:        pos.Filename,
 				Line:        pos.Line,
 				Column:      pos.Column,
-				Receiver:    receiver,
-				Sig:         "",
 			}
+			// Default parent is the package symbol
+			symbol.ParentID = pkgSymID
 
-			// Now set the signature for functions
+			// Special handling for functions/methods
 			if fn, ok := obj.(*types.Func); ok {
-				sig, _ := fn.Type().(*types.Signature)
-				if sig != nil {
-					// Build a formatted signature string, including receiver if present
+				if sig, _ := fn.Type().(*types.Signature); sig != nil {
 					symbol.Sig = buildFuncSignature(fn, sig)
-
-					// If it's a method (sig.Recv() != nil), record the parent struct/interface symbol.
+					// If it's a method (has receiver), try to find the parent type.
 					if sig.Recv() != nil {
 						theType := sig.Recv().Type()
 						if p, ok := theType.(*types.Pointer); ok {
@@ -228,25 +268,34 @@ func ExtractSymbols(pkgs []*packages.Package) (
 							if pid, found := objectToSymbol[named.Obj()]; found {
 								symbol.ParentID = pid
 							} else {
-								newID, success := getOrCreateStubForExternal(named.Obj(), objectToSymbol, &symbols, &currentID)
+								// Create an external stub if the parent type doesn't exist yet
+								newID, success := getOrCreateStubForExternal(
+									named.Obj(),
+									objectToSymbol,
+									&symbols,
+									&currentID,
+								)
 								if success {
 									symbol.ParentID = newID
 								}
 							}
+							// Mark the symbol as a method
+							symbol.Kind = SymbolKindMethod
+						} else {
+							// It's just a function with a weird receiver we can't resolve
 						}
 					}
 				}
 			}
 
-			// Special case for imports (types.PkgName)
+			// Special case for imports (PkgName)
 			if pkgNameObj, ok := obj.(*types.PkgName); ok {
 				symbol.PackagePath = pkgNameObj.Imported().Path()
 				symbol.Name = pkgNameObj.Imported().Path()
-
-				// Create an import reference from the current package to this imported package
+				// Record import reference from the current package to this import symbol
 				importRefs = append(importRefs, Reference{
-					FromID:  packageToSymbol[pkg],
-					ToID:    currentID,
+					FromID:  pkgSymID,
+					ToID:    symbol.ID,
 					File:    pos.Filename,
 					Line:    pos.Line,
 					Column:  pos.Column,
@@ -259,13 +308,19 @@ func ExtractSymbols(pkgs []*packages.Package) (
 		}
 	}
 
-	// Identify struct fields after collecting all symbols.
-	idToObject := make(map[int]types.Object)
+	// ------------------------------------------------------------
+	// Pass 3: refine type symbols (struct/interface), add fields & interface methods.
+	// We'll read the existing "type" symbols from objectToSymbol, see if their
+	// underlying type is struct or interface, and update them accordingly.
+
+	// Build a quick reverse map from symbol ID to types.Object
+	idToObject := make(map[int]types.Object, len(objectToSymbol))
 	for obj, sid := range objectToSymbol {
 		idToObject[sid] = obj
 	}
 
-	symbolIndexMap := make(map[int]int)
+	// Index to find symbol by ID quickly
+	symbolIndexMap := make(map[int]int, len(symbols))
 	for i, s := range symbols {
 		symbolIndexMap[s.ID] = i
 	}
@@ -277,30 +332,26 @@ func ExtractSymbols(pkgs []*packages.Package) (
 				under := typeName.Type().Underlying()
 
 				if st, ok := under.(*types.Struct); ok {
-					// Mark this symbol as a struct
+					// Mark the symbol as struct
 					symbols[symbolIndexMap[s.ID]].Kind = SymbolKindStruct
 
-					// Now ensure all fields (including embedded) have Symbol entries
+					// Ensure all fields (including embedded) get a symbol
 					for i := 0; i < st.NumFields(); i++ {
 						fieldObj := st.Field(i)
 						if fieldID, found := objectToSymbol[fieldObj]; found {
+							// We already have a symbol for this field
 							fieldIdx := symbolIndexMap[fieldID]
 							symbols[fieldIdx].Kind = SymbolKindField
-							// Reuse 'Receiver' to store the struct's full type string
 							symbols[fieldIdx].Receiver = typeName.Type().String()
-							// Also set ParentID to the struct's ID
 							symbols[fieldIdx].ParentID = s.ID
 						} else {
-							// Create a new symbol for an embedded or otherwise missing field
+							// Create a new field symbol
 							currentID++
 							newField := Symbol{
 								ID:          currentID,
 								Name:        fieldObj.Name(),
 								Kind:        SymbolKindField,
 								PackagePath: s.PackagePath,
-								File:        "",
-								Line:        0,
-								Column:      0,
 								Receiver:    typeName.Type().String(),
 								ParentID:    s.ID,
 							}
@@ -310,10 +361,41 @@ func ExtractSymbols(pkgs []*packages.Package) (
 						}
 					}
 				} else if iface, ok := under.(*types.Interface); ok {
+					// Mark the symbol as interface
 					symbols[symbolIndexMap[s.ID]].Kind = SymbolKindInterface
 					symbols[symbolIndexMap[s.ID]].Sig = buildInterfaceSignature(typeName, iface)
+
+					// For each interface method, create a child symbol if needed
+					for i := 0; i < iface.NumMethods(); i++ {
+						m := iface.Method(i)
+						if _, found := objectToSymbol[m]; found {
+							// Symbol already exists for this method
+							continue
+						}
+						currentID++
+						methodSig := ""
+						if msig, ok := m.Type().(*types.Signature); ok {
+							methodSig = buildFuncSignature(m, msig)
+						}
+						methodSym := Symbol{
+							ID:          currentID,
+							Name:        m.Name(),
+							Kind:        SymbolKindMethod,
+							PackagePath: s.PackagePath,
+							File:        s.File,   // Not precise, but we reuse
+							Line:        s.Line,
+							Column:      s.Column,
+							Receiver:    s.Name,   // e.g. "MyInterface"
+							Sig:         methodSig,
+							External:    s.External,
+							ParentID:    s.ID,
+						}
+						symbols = append(symbols, methodSym)
+						objectToSymbol[m] = currentID
+						symbolIndexMap[currentID] = len(symbols) - 1
+					}
 				}
-				// Else it remains SymbolKindType for other named types (aliases, etc.)
+				// else: remain SymbolKindType for alias or other named types
 			}
 		}
 	}
