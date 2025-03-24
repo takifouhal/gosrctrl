@@ -93,7 +93,7 @@ func getOrCreateStubForExternal(
 
 	objPkg := obj.Pkg()
 	if objPkg == nil {
-		// If we can’t determine a package, we can’t create a meaningful stub.
+		// If we can't determine a package, we can't create a meaningful stub.
 		return -1, false
 	}
 
@@ -101,7 +101,7 @@ func getOrCreateStubForExternal(
 	*maxID++
 	stubKind := classifyObject(obj)
 
-	// Adjust if the object is a named type that’s actually struct or interface
+	// Adjust if the object is a named type that's actually struct or interface
 	if stubKind == SymbolKindType {
 		if named, okType := obj.Type().(*types.Named); okType {
 			if _, isIface := named.Underlying().(*types.Interface); isIface {
@@ -258,6 +258,7 @@ func ExtractSymbols(pkgs []*packages.Package) (
 			if fn, ok := obj.(*types.Func); ok {
 				if sig, _ := fn.Type().(*types.Signature); sig != nil {
 					symbol.Sig = buildFuncSignature(fn, sig)
+					fmt.Printf("[DEBUG FUNCTIONS] Found function: %s with signature %s\n", fn.Name(), symbol.Sig)
 					// If it's a method (has receiver), try to find the parent type.
 					if sig.Recv() != nil {
 						theType := sig.Recv().Type()
@@ -265,9 +266,12 @@ func ExtractSymbols(pkgs []*packages.Package) (
 							theType = p.Elem()
 						}
 						if named, ok := theType.(*types.Named); ok {
+							fmt.Printf("[DEBUG FUNCTIONS] It's a method with named receiver: %s\n", named.Obj().Name())
 							if pid, found := objectToSymbol[named.Obj()]; found {
+								fmt.Printf("[DEBUG FUNCTIONS] Setting method's ParentID to existing type symbol with ID=%d\n", pid)
 								symbol.ParentID = pid
 							} else {
+								fmt.Printf("[DEBUG FUNCTIONS] Parent type symbol not found, creating external stub for: %s\n", named.Obj().Name())
 								// Create an external stub if the parent type doesn't exist yet
 								newID, success := getOrCreateStubForExternal(
 									named.Obj(),
@@ -276,12 +280,14 @@ func ExtractSymbols(pkgs []*packages.Package) (
 									&currentID,
 								)
 								if success {
+									fmt.Printf("[DEBUG FUNCTIONS] External stub created with ID=%d, setting as parent\n", newID)
 									symbol.ParentID = newID
 								}
 							}
 							// Mark the symbol as a method
 							symbol.Kind = SymbolKindMethod
 						} else {
+							fmt.Printf("[DEBUG FUNCTIONS] It's a function with an unrecognized receiver type\n")
 							// It's just a function with a weird receiver we can't resolve
 						}
 					}
@@ -332,18 +338,21 @@ func ExtractSymbols(pkgs []*packages.Package) (
 				under := typeName.Type().Underlying()
 
 				if st, ok := under.(*types.Struct); ok {
+					fmt.Printf("[DEBUG FUNCTIONS] Type %s is a struct, refining symbol ID %d\n", typeName.Name(), s.ID)
 					// Mark the symbol as struct
 					symbols[symbolIndexMap[s.ID]].Kind = SymbolKindStruct
 
 					// Ensure all fields (including embedded) get a symbol
 					for i := 0; i < st.NumFields(); i++ {
 						fieldObj := st.Field(i)
+						fmt.Printf("[DEBUG FUNCTIONS] Checking field: %s in struct: %s\n", fieldObj.Name(), typeName.Name())
 						if fieldID, found := objectToSymbol[fieldObj]; found {
 							// We already have a symbol for this field
 							fieldIdx := symbolIndexMap[fieldID]
 							symbols[fieldIdx].Kind = SymbolKindField
 							symbols[fieldIdx].Receiver = typeName.Type().String()
 							symbols[fieldIdx].ParentID = s.ID
+							fmt.Printf("[DEBUG FUNCTIONS] Field symbol found in objectToSymbol, ID=%d\n", fieldID)
 						} else {
 							// Create a new field symbol
 							currentID++
@@ -358,17 +367,21 @@ func ExtractSymbols(pkgs []*packages.Package) (
 							symbols = append(symbols, newField)
 							objectToSymbol[fieldObj] = currentID
 							symbolIndexMap[currentID] = len(symbols) - 1
+							fmt.Printf("[DEBUG FUNCTIONS] Created new field symbol with ID=%d for field: %s\n", currentID, fieldObj.Name())
 						}
 					}
 				} else if iface, ok := under.(*types.Interface); ok {
 					// Mark the symbol as interface
 					symbols[symbolIndexMap[s.ID]].Kind = SymbolKindInterface
 					symbols[symbolIndexMap[s.ID]].Sig = buildInterfaceSignature(typeName, iface)
+					fmt.Printf("[DEBUG FUNCTIONS] Interface refined: %s now marked as interface with signature.\n", s.Name)
 
 					// For each interface method, create a child symbol if needed
 					for i := 0; i < iface.NumMethods(); i++ {
 						m := iface.Method(i)
+						fmt.Printf("[DEBUG FUNCTIONS] Checking interface method: %s\n", m.Name())
 						if _, found := objectToSymbol[m]; found {
+							fmt.Printf("[DEBUG FUNCTIONS] Symbol for interface method: %s already exists, skipping.\n", m.Name())
 							// Symbol already exists for this method
 							continue
 						}
@@ -382,10 +395,10 @@ func ExtractSymbols(pkgs []*packages.Package) (
 							Name:        m.Name(),
 							Kind:        SymbolKindMethod,
 							PackagePath: s.PackagePath,
-							File:        s.File,   // Not precise, but we reuse
+							File:        s.File, // Not precise, but we reuse
 							Line:        s.Line,
 							Column:      s.Column,
-							Receiver:    s.Name,   // e.g. "MyInterface"
+							Receiver:    s.Name, // e.g. "MyInterface"
 							Sig:         methodSig,
 							External:    s.External,
 							ParentID:    s.ID,

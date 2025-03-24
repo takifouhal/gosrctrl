@@ -75,25 +75,23 @@ func main() {
 
 	// Extract references (usages) among the symbols
 	references := ExtractReferences(pkgs, symbols, objectToSymbol, packageToSymbol)
+	fmt.Printf("[DEBUG FUNCTIONS] ExtractReferences returned %d references\n", len(references))
 	references = append(references, importRefs...)
+	fmt.Printf("[DEBUG FUNCTIONS] After appending importRefs, total references = %d\n", len(references))
 
 	fmt.Printf("\nExtracted %d reference(s):\n", len(references))
-	for _, r := range references {
-		fmt.Printf("- from: %d to: %d, file: %s, line: %d, col: %d, type: %s\n",
-			r.FromID, r.ToID, r.File, r.Line, r.Column, r.RefType)
-	}
 
 	// Now detect interface implementations and embedded structs:
 	typeRelations := ExtractTypeRelations(pkgs, symbols, objectToSymbol, packageToSymbol)
 	references = append(references, typeRelations...)
 
 	fmt.Printf("\nExtracted %d additional type-relations:\n", len(typeRelations))
-	
+
 	// Count different types of relationships
 	implCount := 0
 	embedCount := 0
 	usageCount := 0
-	
+
 	for _, r := range typeRelations {
 		switch r.RefType {
 		case "implements":
@@ -104,29 +102,29 @@ func main() {
 			usageCount++
 		}
 	}
-	
+
 	fmt.Printf("- Interface implementations: %d\n", implCount)
 	fmt.Printf("- Struct/interface embeddings: %d\n", embedCount)
 	fmt.Printf("- Type usage references: %d\n", usageCount)
-	
+
 	// Print detailed relationship information for debugging
 	if len(typeRelations) <= 20 { // Only show details for smaller projects
 		fmt.Println("\nDetailed type relationships:")
 		for _, r := range typeRelations {
 			fromSym := findSymbolByID(symbols, r.FromID)
 			toSym := findSymbolByID(symbols, r.ToID)
-			
+
 			fromName := "unknown"
 			toName := "unknown"
-			
+
 			if fromSym != nil {
 				fromName = fmt.Sprintf("%s (%s)", fromSym.Name, fromSym.Kind)
 			}
-			
+
 			if toSym != nil {
 				toName = fmt.Sprintf("%s (%s)", toSym.Name, toSym.Kind)
 			}
-			
+
 			fmt.Printf("- %s → %s, relationship: %s\n", fromName, toName, r.RefType)
 		}
 	}

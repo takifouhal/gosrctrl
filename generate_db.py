@@ -92,18 +92,12 @@ def main():
     input_path = Path(args.input)
     output_path = Path(args.output)
     
-    # Debug information about paths
-    print(f"DEBUG: Using input file: {input_path.absolute()}", file=sys.stderr)
-    print(f"DEBUG: Target output file: {output_path.absolute()}", file=sys.stderr)
-    print(f"DEBUG: Current working directory: {os.getcwd()}", file=sys.stderr)
-    
     # Check if output directory exists and is writable
     output_dir = output_path.parent
     if not output_dir.exists():
         print(f"WARNING: Output directory does not exist: {output_dir}", file=sys.stderr)
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            print(f"DEBUG: Created output directory: {output_dir}", file=sys.stderr)
         except Exception as e:
             print(f"ERROR: Failed to create output directory: {e}", file=sys.stderr)
             exit(1)
@@ -130,9 +124,7 @@ def main():
 
     # Open (and clear) the Sourcetrail DB
     try:
-        print(f"DEBUG: Opening Sourcetrail DB at: {output_path.absolute()}", file=sys.stderr)
         db = SourcetrailDB.open(output_path, clear=True)
-        print(f"DEBUG: Successfully opened Sourcetrail DB", file=sys.stderr)
     except Exception as e:
         print(f"ERROR: Failed to open Sourcetrail DB: {e}", file=sys.stderr)
         exit(1)
@@ -225,9 +217,13 @@ def main():
         parent_id = pkg_parent_id
         stored_parent_id = sym.get("ParentID", 0)
         if stored_parent_id != 0:
+            print(f"[DEBUG FUNCTIONS] Symbol {sym_id} has a parent ID {stored_parent_id}, checking symbol_id_map", file=sys.stderr)
             mapped_parent_id = symbol_id_map.get(stored_parent_id)
             if mapped_parent_id is not None:
+                print(f"[DEBUG FUNCTIONS] -> Found mapped parent ID = {mapped_parent_id} for symbol {sym_id}. Setting parent_id to it.", file=sys.stderr)
                 parent_id = mapped_parent_id
+            else:
+                print(f"[DEBUG FUNCTIONS] -> No mapped parent ID found for symbol {sym_id}", file=sys.stderr)
 
         # Decide how to record the symbol based on sym_kind
         if sym_kind == "package":
@@ -297,14 +293,19 @@ def main():
 
         elif sym_kind == "method":
             # Now we simply trust the parser's ParentID if nonzero.
+            print(f"[DEBUG FUNCTIONS] Symbol {sym_id} is a method: {sym_name}", file=sys.stderr)
             stored_parent_id = sym.get("ParentID", 0)
             if stored_parent_id != 0:
+                print(f"[DEBUG FUNCTIONS] -> stored_parent_id for method is {stored_parent_id}, checking map", file=sys.stderr)
                 mapped_parent_id = symbol_id_map.get(stored_parent_id)
                 if mapped_parent_id is not None:
+                    print(f"[DEBUG FUNCTIONS] -> method found parent in symbol_id_map: {mapped_parent_id}", file=sys.stderr)
                     parent_id = mapped_parent_id
                 else:
+                    print(f"[DEBUG FUNCTIONS] -> method parent not found, fallback to package parent", file=sys.stderr)
                     parent_id = pkg_parent_id
             else:
+                print(f"[DEBUG FUNCTIONS] -> no stored_parent_id for method, fallback to package", file=sys.stderr)
                 parent_id = pkg_parent_id
 
             recorded_id = db.record_method(
@@ -347,9 +348,7 @@ def main():
             db.record_symbol_location(recorded_id, file_id, start_line, start_col, end_line, end_col)
 
     # STEP 3: Insert references (calls, usages, imports, etc.)
-    print(f"DEBUG: Processing {len(references)} references", file=sys.stderr)
     type_relation_count = sum(1 for ref in references if ref.get("RefType") in ("implements", "embeds"))
-    print(f"DEBUG: Found {type_relation_count} interface-implementation and embedding relationships", file=sys.stderr)
     
     for ref in references:
         from_id = ref["FromID"]
@@ -391,8 +390,6 @@ def main():
                     # We check that the relationship makes semantic sense
                     if to_kind != "interface" and to_kind != "unknown":
                         print(f"WARNING: Unusual implements relationship: {from_kind} '{from_sym_name}' → {to_kind} '{to_sym_name}' (target should be interface)", file=sys.stderr)
-                        
-                    print(f"DEBUG: Recording implementation relationship: {from_kind} '{from_sym_name}' → {to_kind} '{to_sym_name}'", file=sys.stderr)
                 else:  # embeds
                     # For embedding, we want to show composition relationships
                     # This can be struct→struct or interface→interface
@@ -401,8 +398,6 @@ def main():
                     
                     if from_kind == "interface" and to_kind != "interface" and to_kind != "unknown":
                         print(f"WARNING: Unusual interface embedding: {from_kind} '{from_sym_name}' embeds {to_kind} '{to_sym_name}' (not an interface)", file=sys.stderr)
-                        
-                    print(f"DEBUG: Recording embedding relationship: {from_kind} '{from_sym_name}' → {to_kind} '{to_sym_name}'", file=sys.stderr)
                 
                 # Both 'implements' and 'embeds' are mapped to inheritance in Sourcetrail
                 ref_id = db.record_ref_inheritance(from_numbat_id, to_numbat_id)
@@ -426,24 +421,21 @@ def main():
                 db.record_reference_location(ref_id, ref_file_id, line, col, line, end_col)
 
     try:
-        print(f"DEBUG: Committing Sourcetrail DB changes", file=sys.stderr)
         db.commit()
-        print(f"DEBUG: Successfully committed changes", file=sys.stderr)
         db.close()
-        print(f"DEBUG: Closed Sourcetrail DB", file=sys.stderr)
         
         # Verify the file exists after creation
         if output_path.exists():
-            print(f"DEBUG: Verified file exists: {output_path.absolute()}, size: {output_path.stat().st_size} bytes", file=sys.stderr)
+            pass
         else:
             print(f"ERROR: File does not exist after creation: {output_path.absolute()}", file=sys.stderr)
             
         # Check if project file was created too
         project_path = output_path.with_suffix(".srctrlprj")
         if project_path.exists():
-            print(f"DEBUG: Project file exists: {project_path.absolute()}, size: {project_path.stat().st_size} bytes", file=sys.stderr)
+            pass
         else:
-            print(f"DEBUG: Project file was not created: {project_path.absolute()}", file=sys.stderr)
+            pass
     except Exception as e:
         print(f"ERROR during final steps: {e}", file=sys.stderr)
         exit(1)
