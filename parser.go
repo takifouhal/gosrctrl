@@ -217,6 +217,24 @@ func ExtractSymbols(pkgs []*packages.Package) (
 				if sig != nil {
 					// Build a formatted signature string, including receiver if present
 					symbol.Sig = buildFuncSignature(fn, sig)
+
+					// If it's a method (sig.Recv() != nil), record the parent struct/interface symbol.
+					if sig.Recv() != nil {
+						theType := sig.Recv().Type()
+						if p, ok := theType.(*types.Pointer); ok {
+							theType = p.Elem()
+						}
+						if named, ok := theType.(*types.Named); ok {
+							if pid, found := objectToSymbol[named.Obj()]; found {
+								symbol.ParentID = pid
+							} else {
+								newID, success := getOrCreateStubForExternal(named.Obj(), objectToSymbol, &symbols, &currentID)
+								if success {
+									symbol.ParentID = newID
+								}
+							}
+						}
+					}
 				}
 			}
 

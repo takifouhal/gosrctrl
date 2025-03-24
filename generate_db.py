@@ -280,26 +280,20 @@ def main():
             )
 
         elif sym_kind == "method":
-            # For methods, we have a receiver string. Locate the parent struct/interface if possible.
-            raw_receiver = receiver_str.replace("(*", "").replace("*", "").replace(")", "")
-            potential_type_name = raw_receiver.split(".")[-1]
-            parent_found = None
-            for s2 in symbols:
-                if (
-                    s2["Kind"] in ("type", "struct", "interface")
-                    and s2["Name"] == potential_type_name
-                    and s2.get("PackagePath", "") == package_path
-                ):
-                    candidate_numbat_id = symbol_id_map.get(s2["ID"])
-                    if candidate_numbat_id is not None:
-                        parent_found = candidate_numbat_id
-                        break
-            if parent_found is None:
-                parent_found = pkg_parent_id
+            # Now we simply trust the parser's ParentID if nonzero.
+            stored_parent_id = sym.get("ParentID", 0)
+            if stored_parent_id != 0:
+                mapped_parent_id = symbol_id_map.get(stored_parent_id)
+                if mapped_parent_id is not None:
+                    parent_id = mapped_parent_id
+                else:
+                    parent_id = pkg_parent_id
+            else:
+                parent_id = pkg_parent_id
 
             recorded_id = db.record_method(
                 name=sym_name,
-                parent_id=parent_found,
+                parent_id=parent_id,
                 
                 is_indexed=indexed
             )
