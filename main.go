@@ -51,6 +51,18 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Convert relative path "." to absolute path
+	if pathArg == "." {
+		// Get current working directory
+		pwd, err := os.Getwd()
+		if err != nil {
+			fmt.Printf("Error getting current working directory: %v\n", err)
+			os.Exit(1)
+		}
+		pathArg = pwd
+		fmt.Printf("Using absolute path: %s\n", pathArg)
+	}
+
 	// Check if the specified path exists and is a directory
 	info, err := os.Stat(pathArg)
 	if os.IsNotExist(err) {

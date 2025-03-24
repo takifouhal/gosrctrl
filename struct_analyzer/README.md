@@ -1,47 +1,69 @@
-# Struct Analyzer for Sourcetrail DB
+# Go Struct Analyzer for Sourcetrail
 
-This tool analyzes Go structs in a Sourcetrail database and displays detailed information about their fields and methods. It uses a generic approach to extract field and method names without relying on any hardcoded values, ensuring it works with any codebase.
+This tool analyzes Go structs in a Sourcetrail database using dynamic pattern recognition to extract field and method information.
 
 ## Features
 
-- Identifies structs in a Sourcetrail database by name
-- Extracts field and method names generically
-- Provides a summary count of fields and methods
-- Supports saving output to a file
+- Extracts field information using pattern recognition instead of hardcoded symbol names
+- Dynamically derives method names based on common patterns and fallback strategies
 - Works with any Go struct in any codebase
+- No hardcoded dependencies on specific symbol names or formats
+- Outputs a clean summary for easy review
 
 ## Usage
 
 ```bash
-./struct_analyzer.sh <database_path> <struct_name> [options]
+./struct_analyzer.sh <path_to_srctrldb_file> <struct_name>
 ```
 
-### Options
-
-- `-h, --help`: Show help message
-- `-o, --output <file>`: Save output to a file
-
-### Examples
+### Example
 
 ```bash
-# Display analysis in terminal
-./struct_analyzer.sh ~/path/to/project.srctrldb SQLRepository
+# Analyze SQLRepository struct
+./struct_analyzer.sh /path/to/your/database.srctrldb SQLRepository
 
-# Save analysis to a file
-./struct_analyzer.sh ~/path/to/project.srctrldb SQLRepository -o sql_repo_info.txt
-
-# Analyze a different struct
-./struct_analyzer.sh ~/path/to/project.srctrldb HttpHandler
+# Save the output to a file
+./struct_analyzer.sh /path/to/your/database.srctrldb SQLRepository > analysis_results.txt
 ```
+
+## Path Considerations When Generating Sourcetrail DB
+
+When generating the Sourcetrail database with `gosrctrl`, it's recommended to:
+
+1. Always use absolute paths with the `-path` parameter:
+   ```bash
+   # This works consistently
+   gosrctrl -path $(pwd) -out db_file.srctrldb
+   
+   # Or full explicit path
+   gosrctrl -path /Users/username/path/to/project -out db_file.srctrldb
+   ```
+
+2. Avoid using relative paths which may cause errors:
+   ```bash
+   # This might cause errors
+   gosrctrl -path . -out db_file.srctrldb
+   ```
 
 ## Output
 
-The tool provides:
+The analyzer outputs the following information:
 
-1. **Struct Info**: Basic information about the struct, including its ID and serialized name
-2. **Fields**: List of the struct's fields with their IDs and names
-3. **Methods**: List of the struct's methods with their IDs and names
+1. **Struct Info**: Basic information about the struct, including its ID
+2. **Fields**: List of fields belonging to the struct, with their names and IDs
+3. **Methods**: List of methods belonging to the struct, with their names and IDs
 4. **Summary**: A count of fields and methods
+
+## How It Works
+
+The analyzer uses SQLite queries to extract information from the Sourcetrail database. It identifies fields and methods by:
+
+1. Finding the struct ID by name
+2. Extracting fields associated with the struct
+3. Extracting methods associated with the struct
+4. Using pattern recognition to derive meaningful names
+
+This tool works without hardcoded symbol names, making it adaptable to any Go codebase.
 
 ## Requirements
 
